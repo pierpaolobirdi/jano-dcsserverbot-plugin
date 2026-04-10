@@ -41,21 +41,33 @@ All commands use the `/jano` prefix:
 - Python 3.11+
 - PostgreSQL 14+
 - discord.py 2.x (included with DCSServerBot)
-- **pytz** (must be installed separately — see below)
+- **pytz** (installed automatically by the installer)
 
 ---
 
 ## Installation
 
-### 1. Install pytz
+### Option 1 — Automatic installer (recommended)
 
-Jano requires the `pytz` library for timezone handling. Install it into the DCSServerBot Python environment:
+1. Download the latest release zip from the [Releases](../../releases) page
+2. Extract it anywhere on your PC
+3. Double-click **`install.bat`**
+4. The installer will:
+   - Detect your DCSServerBot installation automatically
+   - Install the `pytz` dependency
+   - Copy all plugin files to the correct locations
+   - Preserve your existing `jano.yaml` if it already exists
+   - Warn you if `jano` is missing from `main.yaml`
+
+### Option 2 — Manual installation
+
+#### 1. Install pytz
 
 ```cmd
 %USERPROFILE%\.dcssb\Scripts\pip install pytz
 ```
 
-### 2. Copy plugin files
+#### 2. Copy plugin files
 
 Copy the `plugins/jano/` folder to your DCSServerBot plugins directory:
 
@@ -71,7 +83,7 @@ DCSServerBot/
             └── tables.sql
 ```
 
-### 3. Copy configuration file
+#### 3. Copy configuration file
 
 Copy `config/plugins/jano.yaml` to your DCSServerBot config directory:
 
@@ -82,7 +94,7 @@ DCSServerBot/
         └── jano.yaml
 ```
 
-### 4. Enable the plugin
+#### 4. Enable the plugin
 
 Add `jano` to `opt_plugins` in your `config/main.yaml`:
 
@@ -91,12 +103,9 @@ opt_plugins:
   - jano
 ```
 
-### 5. Start the bot
+#### 5. Restart DCSServerBot
 
-On first startup, Jano will automatically:
-- Create the required PostgreSQL tables (`jano_instances`, `jano_state`, `jano_global`)
-- Apply any pending database migrations
-- Register the `/jano` slash commands with Discord
+On first startup, Jano will automatically create the required database tables and register the `/jano` slash commands with Discord.
 
 ---
 
