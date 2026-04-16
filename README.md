@@ -41,7 +41,7 @@ All commands use the `/jano` prefix:
 - Python 3.11+
 - PostgreSQL 14+
 - discord.py 2.x (included with DCSServerBot)
-- **pytz** (installed automatically by the installer)
+- `tzdata` — Windows timezone data (installed automatically by the installer)
 
 ---
 
@@ -54,17 +54,26 @@ All commands use the `/jano` prefix:
 3. Double-click **`install.bat`**
 4. The installer will:
    - Detect your DCSServerBot installation automatically
-   - Install the `pytz` dependency
+   - Install `tzdata` (Windows timezone data) into the DCSServerBot Python environment
+   - Add `tzdata` to `requirements.local` so it is reinstalled automatically on every DCSServerBot update
    - Copy all plugin files to the correct locations
    - Preserve your existing `jano.yaml` if it already exists
    - Warn you if `jano` is missing from `main.yaml`
 
 ### Option 2 — Manual installation
 
-#### 1. Install pytz
+#### 1. Install tzdata
+
+Jano uses Python's built-in `zoneinfo` for timezone handling. On Windows, timezone data must be installed separately:
 
 ```cmd
-%USERPROFILE%\.dcssb\Scripts\pip install pytz
+%USERPROFILE%\.dcssb\Scripts\pip install tzdata
+```
+
+To ensure `tzdata` is reinstalled automatically on every DCSServerBot update, add it to `requirements.local` in the root of your DCSServerBot installation:
+
+```
+tzdata
 ```
 
 #### 2. Copy plugin files

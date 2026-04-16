@@ -1,0 +1,4 @@
+# Jano plugin dependencies
+# Place this file in the root of your DCSServerBot installation.
+# DCSServerBot will automatically install these packages on each update.
+tzdata==2026.1

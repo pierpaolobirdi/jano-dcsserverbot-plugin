@@ -1,12 +1,11 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-:: Get the directory where this script is located (works from anywhere)
 set "SCRIPT_DIR=%~dp0"
 
 echo.
 echo ================================================
-echo  Jano Plugin Installer for DCSServerBot v3.2
+echo  Jano Plugin Installer for DCSServerBot v4.0.0
 echo ================================================
 echo.
 
@@ -48,25 +47,40 @@ echo.
 echo Installing Jano to: !DCSSB_PATH!
 echo.
 
-:: ── Install pytz ──────────────────────────────────────────────────────────────
-echo [1/4] Installing pytz...
+:: ── Install tzdata ────────────────────────────────────────────────────────────
+echo [1/5] Installing tzdata (Windows timezone data)...
 if exist "%USERPROFILE%\.dcssb\Scripts\pip.exe" (
-    "%USERPROFILE%\.dcssb\Scripts\pip.exe" install pytz --quiet
+    "%USERPROFILE%\.dcssb\Scripts\pip.exe" install tzdata --quiet
     if !ERRORLEVEL! == 0 (
-        echo       OK - pytz installed successfully.
+        echo       OK - tzdata installed successfully.
     ) else (
-        echo       WARNING - Could not install pytz automatically.
+        echo       WARNING - Could not install tzdata automatically.
         echo       Please run manually:
-        echo       %%USERPROFILE%%\.dcssb\Scripts\pip install pytz
+        echo       %%USERPROFILE%%\.dcssb\Scripts\pip install tzdata
     )
 ) else (
     echo       WARNING - DCSServerBot Python environment not found at default location.
-    echo       Please install pytz manually:
-    echo       %%USERPROFILE%%\.dcssb\Scripts\pip install pytz
+    echo       Please install tzdata manually:
+    echo       %%USERPROFILE%%\.dcssb\Scripts\pip install tzdata
+)
+
+:: ── Copy requirements.local ───────────────────────────────────────────────────
+echo [2/5] Copying requirements.local...
+if exist "!DCSSB_PATH!\requirements.local" (
+    findstr /C:"tzdata" "!DCSSB_PATH!\requirements.local" > nul 2>&1
+    if !ERRORLEVEL! == 0 (
+        echo       SKIPPED - tzdata already in requirements.local.
+    ) else (
+        echo tzdata>> "!DCSSB_PATH!\requirements.local"
+        echo       OK - tzdata added to existing requirements.local.
+    )
+) else (
+    copy /Y "%SCRIPT_DIR%requirements.local" "!DCSSB_PATH!\requirements.local" > nul
+    echo       OK - requirements.local created.
 )
 
 :: ── Copy plugin files ─────────────────────────────────────────────────────────
-echo [2/4] Copying plugin files...
+echo [3/5] Copying plugin files...
 if not exist "!DCSSB_PATH!\plugins\jano" mkdir "!DCSSB_PATH!\plugins\jano"
 if not exist "!DCSSB_PATH!\plugins\jano\db" mkdir "!DCSSB_PATH!\plugins\jano\db"
 
@@ -78,7 +92,7 @@ copy /Y "%SCRIPT_DIR%plugins\jano\db\tables.sql"  "!DCSSB_PATH!\plugins\jano\db\
 echo       OK - Plugin files copied.
 
 :: ── Copy config file (only if it doesn't exist) ───────────────────────────────
-echo [3/4] Copying configuration file...
+echo [4/5] Copying configuration file...
 if not exist "!DCSSB_PATH!\config\plugins\jano.yaml" (
     if not exist "!DCSSB_PATH!\config\plugins" mkdir "!DCSSB_PATH!\config\plugins"
     copy /Y "%SCRIPT_DIR%config\plugins\jano.yaml" "!DCSSB_PATH!\config\plugins\jano.yaml" > nul
@@ -89,7 +103,7 @@ if not exist "!DCSSB_PATH!\config\plugins\jano.yaml" (
 )
 
 :: ── Check main.yaml for jano entry ───────────────────────────────────────────
-echo [4/4] Checking main.yaml...
+echo [5/5] Checking main.yaml...
 findstr /C:"- jano" "!DCSSB_PATH!\config\main.yaml" > nul 2>&1
 if !ERRORLEVEL! == 0 (
     echo       OK - jano already listed in main.yaml.
