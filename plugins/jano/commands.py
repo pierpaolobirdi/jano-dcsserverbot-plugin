@@ -1,3 +1,9 @@
+"""
+Jano Plugin for DCSServerBot
+Manages Discord channel visibility on a configurable schedule or manually.
+
+Ported from jano_bot_v103.py (standalone) to DCSServerBot Plugin architecture.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +15,7 @@ import re
 from typing import Optional, Type
 
 import discord
-import pytz
+from zoneinfo import ZoneInfo
 from discord import app_commands
 from discord.ext import tasks
 
@@ -24,7 +30,7 @@ log = logging.getLogger(__name__)
 
 # Timezone for schedule calculations — configure in jano.yaml (timezone: "Europe/Madrid")
 _DEFAULT_TZ = "Europe/Madrid"
-TZ = pytz.timezone(_DEFAULT_TZ)
+TZ = ZoneInfo(_DEFAULT_TZ)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -278,7 +284,7 @@ class InstanceState:
             else:
                 ts = override_ts
             if ts.tzinfo is None:
-                ts = TZ.localize(ts)
+                ts = ts.replace(tzinfo=TZ)
             self.override_ts = ts
             self.manual_override    = manual_override
             if self.manual_expired():
@@ -376,10 +382,10 @@ class Jano(Plugin):
         cfg = self.get_config() or {}
         tz_name = cfg.get("timezone", _DEFAULT_TZ)
         try:
-            TZ = pytz.timezone(tz_name)
+            TZ = ZoneInfo(tz_name)
         except Exception:
             self.log.warning(f"Invalid timezone '{tz_name}', using default '{_DEFAULT_TZ}'")
-            TZ = pytz.timezone(_DEFAULT_TZ)
+            TZ = ZoneInfo(_DEFAULT_TZ)
         # Ensure tables exist before anything else
         await self._ensure_tables()
         # Sync after ready to fix any Discord cache issues
