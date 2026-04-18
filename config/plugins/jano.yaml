@@ -1,0 +1,22 @@
+# jano.yaml — Jano plugin configuration
+# Place this file in: config/plugins/jano.yaml
+
+# command_role_ids: Discord role names or IDs allowed to use Jano commands
+#                   across ALL instances. Can be role names (e.g. "Admin") or
+#                   numeric IDs. Leave empty for open access (not recommended).
+#                   Can also be changed at runtime via /jano setup.
+#
+# timezone: IANA timezone name used for schedule calculations.
+#           Default is "Europe/Madrid". Change to match your server location.
+#           Full list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+#
+# Example:
+# DEFAULT:
+#   command_role_ids:
+#     - Admin
+#     - 123456789012345678
+#   timezone: "Europe/London"
+
+DEFAULT:
+  command_role_ids: []
+  timezone: "Europe/Madrid"
