@@ -173,13 +173,3 @@ MIT
 
 ---
 
-## Changelog
-
-### v1.1
-- **Timezone is no longer a module-level global.** It is now stored on the plugin instance (`self.tz`) and passed into `InstanceConfig`. This prevents timezone leaks across hot-reloads and makes the code easier to test.
-- **Persistence is now always awaited.** `InstanceState.save()` is a coroutine — all callers `await` it so write errors surface immediately instead of being silently swallowed by fire-and-forget futures.
-- **`InstanceState.restore()` classmethod** replaces the old `from_row()` instance method, making it clear that this is an alternative construction path rather than a post-initialisation mutation.
-- **Embed cleanup on instance deletion.** Deleting an instance via `/jano setup` now removes the open-channel announcement embed from Discord before purging the DB row.
-- **Configurable open-channel announcement.** The title and body of the announcement sent when a channel group opens on schedule can now be customised in `jano.yaml` under `open_message`. Placeholders `{name}` and `{voice}` are available.
-- **`effective_role_id()` documented.** The non-obvious convention of using `guild.id` as the `@everyone` role ID is now explained in the docstring.
-- **`_sync_after_ready()` risk documented.** The docstring now explains the risk of `clear_commands(guild=None)` affecting other plugins and why the 2-second delay mitigates it.
