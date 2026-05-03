@@ -10,13 +10,23 @@
 #           Default is "Europe/Madrid". Change to match your server location.
 #           Full list: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 #
+# open_message: Customise the announcement embed sent to the text channel when
+#               a channel group opens on schedule.  Both fields are optional —
+#               omit either to use the built-in default.
+#               Placeholders:  {name}  = instance name
+#                              {voice} = voice-channel mention (<#id>)
+#
 # Example:
 # DEFAULT:
 #   command_role_ids:
 #     - Admin
 #     - 123456789012345678
 #   timezone: "Europe/London"
+#   open_message:
+#     title: "🟢  {name} — channels are open!"
+#     body:  "Jump in and connect to {voice} before the event starts."
 
 DEFAULT:
   command_role_ids: []
   timezone: "Europe/Madrid"
+  open_message: {}
