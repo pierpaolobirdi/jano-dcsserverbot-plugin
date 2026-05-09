@@ -172,4 +172,3 @@ Database migrations are applied automatically on each startup — safe to run re
 MIT
 
 ---
-

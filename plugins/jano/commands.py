@@ -21,7 +21,7 @@ from discord.ext import tasks
 
 import psycopg
 import psycopg.rows
-from core import Plugin, TEventListener
+from core import Group, Plugin, TEventListener
 from services.bot import DCSServerBot
 
 from .version import __version__
@@ -380,7 +380,7 @@ class Jano(Plugin):
     """DCSServerBot plugin — manages Discord comms channels by schedule or manually."""
 
     # ── Slash command groups ───────────────────────────────────────────────
-    jano_group = app_commands.Group(
+    jano_group = Group(
         name="jano",
         description="Jano — manage comms channel access"
     )
