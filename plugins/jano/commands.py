@@ -419,8 +419,6 @@ class Jano(Plugin):
 
         # Ensure tables exist before anything else
         await self._ensure_tables()
-        # Sync after ready to fix any Discord cache issues
-        asyncio.ensure_future(self._sync_after_ready())
         # Store raw values from YAML (can be role names or numeric IDs).
         # Resolution to IDs happens in on_ready() once the guild is available.
         self._command_role_ids_raw = cfg.get("command_role_ids", []) or []
@@ -429,39 +427,6 @@ class Jano(Plugin):
         if self.scheduler.is_running():
             self.scheduler.cancel()
         await super().cog_unload()
-
-    async def _sync_after_ready(self):
-        """Fix CommandSignatureMismatch by clearing global commands and syncing guild.
-
-        Background: DCSServerBot registers commands globally by default.  When a
-        guild-scoped sync is also performed, Discord sees two copies of each command
-        with potentially different signatures and raises CommandSignatureMismatch.
-
-        Solution: clear ALL global commands first, then copy everything to the guild
-        and sync only at guild level.  Guild commands propagate to Discord instantly
-        (no 1-hour cache delay) and avoid the duplicate-entry problem.
-
-        ⚠️ RISK: clear_commands(guild=None) removes *every* global command registered
-        in the command tree at the time of this call — including commands from other
-        DCSServerBot plugins that loaded before Jano.  This is safe as long as all
-        plugins register guild-scoped commands and re-sync on ready.  If any plugin
-        relies exclusively on global commands and does not re-sync, its commands will
-        disappear until the next bot restart.  Jano runs this after a 2-second delay
-        to give other plugins time to finish their own on_ready logic first.
-        """
-        await self.bot.wait_until_ready()
-        await asyncio.sleep(2)  # let DCSServerBot finish its own sync first
-        try:
-            guild_obj = discord.Object(id=self.bot.guilds[0].id)
-            # Step 1: Clear global commands (these conflict with guild commands)
-            self.bot.tree.clear_commands(guild=None)
-            await self.bot.tree.sync()
-            # Step 2: Copy all commands to guild and sync (instant propagation)
-            self.bot.tree.copy_global_to(guild=guild_obj)
-            synced = await self.bot.tree.sync(guild=guild_obj)
-            self.log.debug(f"Jano: synced {len(synced)} commands to guild, globals cleared.")
-        except Exception as e:
-            self.log.warning(f"Jano: sync failed: {e}")
 
 
     async def on_ready(self) -> None:
@@ -481,7 +446,7 @@ class Jano(Plugin):
         await self._evaluate_all()
         if not self.scheduler.is_running():
             self.scheduler.start()
-        self.log.info(f"Ready - {len(self.states)} instance(s) loaded.")
+        self.log.debug(f"Ready - {len(self.states)} instance(s) loaded.")
 
     async def _resolve_yaml_roles(self, guild: discord.Guild):
         """Resolve role names or numeric IDs from jano.yaml into a list of int IDs.
@@ -680,10 +645,10 @@ class Jano(Plugin):
                 )
                 st = InstanceState.restore(cfg, state_map.get(name), self)
                 self.states[name] = st
-                self.log.info(f"Instance '{name}' restored from DB")
+                self.log.debug(f"Instance '{name}' restored from DB")
 
             if not self.states:
-                self.log.info("No instances configured. Use /jano setup to create one.")
+                self.log.debug("No instances configured. Use /jano setup to create one.")
 
         except Exception as e:
             self.log.error(f"Error loading state from DB: {e}")
