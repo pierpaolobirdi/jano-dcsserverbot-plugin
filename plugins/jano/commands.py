@@ -12,7 +12,7 @@ import datetime
 import json
 import logging
 import re
-from typing import Optional, Type
+from typing import Type
 
 import discord
 from zoneinfo import ZoneInfo
@@ -23,8 +23,6 @@ import psycopg
 import psycopg.rows
 from core import Group, Plugin, TEventListener
 from services.bot import DCSServerBot
-
-from .version import __version__
 
 log = logging.getLogger(__name__)
 
@@ -104,7 +102,7 @@ class InstanceState:
         self.max_hours_override     = None
         self.schedule_override       = None
         self._trimmed_duration    = None
-        self._evaluando             = False
+        self._evaluating             = False
 
     # ── Derived getters ────────────────────────────────────────────────────
 
@@ -131,9 +129,6 @@ class InstanceState:
         days, open_t, close_t = self.active_schedule()
         if not days:
             return {"days": "No schedule (manual)", "opening": "—", "closing": "—"}
-        open_h, open_m = map(int, open_t.split(":"))
-        close_h, close_m = map(int, close_t.split(":"))
-        overnight = open_h * 60 + open_m > close_h * 60 + close_m
         return {
             "days":    ", ".join(day_map[d] for d in days if d in day_map),
             "opening": open_t,
@@ -257,7 +252,7 @@ class InstanceState:
                     ))
                     # Upsert state
                     ts = self.override_ts.isoformat() if self.override_ts else None
-                    horario_json = json.dumps(self.schedule_override) if self.schedule_override else None
+                    schedule_json = json.dumps(self.schedule_override) if self.schedule_override else None
                     await conn.execute("""
                         INSERT INTO jano_state
                             (name, current_state, category_name_cache, last_message_id,
@@ -282,7 +277,7 @@ class InstanceState:
                         ts,
                         self.manual_hours_active,
                         self.max_hours_override,
-                        horario_json,
+                        schedule_json,
                     ))
         except Exception as e:
             log.error(f"[Jano/{self.cfg.name}] Error saving state: {e}")
@@ -308,8 +303,8 @@ class InstanceState:
         st.last_message_id        = state_row["last_message_id"]
         st.manual_hours_active    = state_row["manual_hours_active"] or cfg.max_manual_hours
         st.max_hours_override     = state_row["max_hours_override"]
-        raw_horario = state_row["schedule_override"]
-        st.schedule_override = json.loads(raw_horario) if isinstance(raw_horario, str) else raw_horario
+        raw_schedule = state_row["schedule_override"]
+        st.schedule_override = json.loads(raw_schedule) if isinstance(raw_schedule, str) else raw_schedule
 
         manual_override = state_row["manual_override"]
         override_ts     = state_row["override_ts"]
@@ -514,9 +509,6 @@ class Jano(Plugin):
             return True
         return False
 
-    def _tiene_rol_global(self, interaction: discord.Interaction) -> bool:
-        return self._is_authorized(interaction, st=None)
-
     async def _ensure_tables(self):
         """Create Jano tables if they do not exist yet.
         Called early in cog_load so tables are ready before on_ready.
@@ -566,11 +558,6 @@ class Jano(Plugin):
                 """)
         except Exception as e:
             self.log.error(f"Error creating tables: {e}")
-
-    async def install(self) -> None:
-
-        """Called by DCSServerBot on first install — creates tables via tables.sql."""
-        await super().install()
 
     async def _migrate_db(self):
         """Apply any missing DB schema changes automatically on startup.
@@ -636,7 +623,6 @@ class Jano(Plugin):
                     state_rows = await cur.fetchall()
                     state_map = {r["name"]: r for r in state_rows}
 
-            guild = self._get_guild()
             for r in inst_rows:
                 name = r["name"]
                 if name in self.states:
@@ -715,9 +701,9 @@ class Jano(Plugin):
             await self._evaluate_instance(st)
 
     async def _evaluate_instance(self, st: InstanceState):
-        if st._evaluando:
+        if st._evaluating:
             return
-        st._evaluando = True
+        st._evaluating = True
         try:
             is_open, source = st.compute_desired_state()
             if source == "EXPIRED":
@@ -740,10 +726,10 @@ class Jano(Plugin):
 
             await _update_category_name(category, is_open, st)
 
-            actual_perm    = category.permissions_for(role).view_channel
-            necesita_cambio = actual_perm != is_open
+            current_perm    = category.permissions_for(role).view_channel
+            needs_change = current_perm != is_open
 
-            if not necesita_cambio:
+            if not needs_change:
                 st.current_state = is_open
                 await st.save()
                 return
@@ -793,9 +779,9 @@ class Jano(Plugin):
                         desc = _fmt(tpl.get("body", body_default))
                         embed = JanoEmbed(title=title, description=desc, color=0x2ECC71)
                         mention_id = st.get_mention_role_id()
-                        contenido  = f"<@&{mention_id}>" if mention_id else None
+                        content  = f"<@&{mention_id}>" if mention_id else None
                         msg = await text_ch.send(
-                            content=contenido,
+                            content=content,
                             embed=embed,
                             allowed_mentions=discord.AllowedMentions(roles=True)
                         )
@@ -812,7 +798,7 @@ class Jano(Plugin):
             st.current_state = is_open
             await st.save()
         finally:
-            st._evaluando = False
+            st._evaluating = False
 
     async def _clean_orphan_embeds(self):
         guild = self._get_guild()
@@ -1134,9 +1120,9 @@ class Jano(Plugin):
                 inline=False
             )
         embed.add_field(name="What next?", value="Keep manual mode or resume automatic schedule.", inline=False)
-        vista = ViewCloseConfirm(st, info or {"no_limit": True}, self)
-        msg = await interaction.followup.send(embed=embed, view=vista, ephemeral=True, wait=True)
-        vista.message = msg
+        view = ViewCloseConfirm(st, info or {"no_limit": True}, self)
+        msg = await interaction.followup.send(embed=embed, view=view, ephemeral=True, wait=True)
+        view.message = msg
 
     async def _comms_resume(self, interaction: discord.Interaction, st: InstanceState):
         await interaction.response.defer(ephemeral=True)
@@ -1173,22 +1159,22 @@ class Jano(Plugin):
     @jano_group.command(name="setup", description="Configure bot resources (channels and roles)")
     @app_commands.describe(instance="Instance to configure (optional if only one)")
     async def jano_setup(self, interaction: discord.Interaction, instance: str = None):
-        if not self._tiene_rol_global(interaction):
+        if not self._is_authorized(interaction):
             asyncio.ensure_future(_reply_ephemeral(interaction, embed=_no_permission()))
             return
 
         guild     = self._get_guild()
-        is_global = self._tiene_rol_global(interaction)
+        is_global = True
 
         if not self.states:
-            vista = ViewSetupEmpty(guild, self)
+            view = ViewSetupEmpty(guild, self)
             embed = JanoEmbed(
                 title="⚙️ Setup — First time configuration",
                 description="No instances configured yet.\n\nAn **instance** is a set of channels the bot will manage — opening and closing on a schedule or manually.\n\nPress **➕ New instance** to create your first one.",
                 color=0xE67E22
             )
-            await interaction.response.send_message(embed=embed, view=vista, ephemeral=True)
-            vista.message = await interaction.original_response()
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            view.message = await interaction.original_response()
             return
 
         if not await self._check_instances(interaction, instance):
@@ -1204,14 +1190,14 @@ class Jano(Plugin):
             asyncio.ensure_future(_reply_ephemeral(interaction, embed=_no_permission()))
             return
 
-        vista = ViewSetup(st, is_global, guild, self)
+        view = ViewSetup(st, is_global, guild, self)
         embed = JanoEmbed(
             title=f"⚙️ Setup — {st.cfg.name}",
             description="What would you like to configure?",
             color=0x3498DB
         )
-        await interaction.response.send_message(embed=embed, view=vista, ephemeral=True)
-        vista.message = await interaction.original_response()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        view.message = await interaction.original_response()
 
     @jano_setup.autocomplete("instance")
     async def _ac_setup(self, interaction, current):
@@ -1325,8 +1311,8 @@ class ViewCloseConfirm(BotView):
         await self.plugin._evaluate_instance(self.st)
         if not self.info_manual.get("no_limit"):
             remaining = _fmt_duration(self.info_manual["remaining"])
-            expira   = self.info_manual["expires_at"].strftime('%H:%M')
-            desc     = f"Channels will return to automatic schedule in **{remaining}** (at **{expira}**)."
+            expires   = self.info_manual["expires_at"].strftime('%H:%M')
+            desc     = f"Channels will return to automatic schedule in **{remaining}** (at **{expires}**)."
         else:
             desc = "Channels will remain closed in manual mode with no time limit."
         embed = JanoEmbed(
@@ -1389,10 +1375,10 @@ class ViewSetup(BotView):
     @discord.ui.button(label="Edit instance", style=discord.ButtonStyle.primary, emoji="✏️", row=0)
     async def btn_edit_instance(self, interaction: discord.Interaction, button: discord.ui.Button):
         data  = WizardData.from_state(self.st)
-        vista = WizardStep5Summary(data, self.guild, self.plugin, edit_mode=True)
+        view = WizardStep5Summary(data, self.guild, self.plugin, edit_mode=True)
         embed = _wizard_summary_embed(data, self.guild, edit_mode='setup')
-        await interaction.response.send_message(embed=embed, view=vista, ephemeral=True)
-        vista.message = await interaction.original_response()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        view.message = await interaction.original_response()
 
     @discord.ui.button(label="Command roles", style=discord.ButtonStyle.primary, emoji="🔑", row=0)
     async def configure_access_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1416,7 +1402,7 @@ class ViewSetup(BotView):
 
     @discord.ui.button(label="New instance", style=discord.ButtonStyle.success, emoji="➕", row=1)
     async def btn_new_instance(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.plugin._tiene_rol_global(interaction):
+        if not self.plugin._is_authorized(interaction):
             asyncio.ensure_future(_reply_ephemeral(interaction, embed=_no_permission("❌ Only admin roles can create instances.")))
             return
         if len(self.plugin.states) >= 4:
@@ -1428,10 +1414,10 @@ class ViewSetup(BotView):
 
     @discord.ui.button(label="Delete instance", style=discord.ButtonStyle.danger, emoji="🗑️", row=1)
     async def btn_delete_instance(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.plugin._tiene_rol_global(interaction):
+        if not self.plugin._is_authorized(interaction):
             asyncio.ensure_future(_reply_ephemeral(interaction, embed=_no_permission("❌ Only admin roles can delete instances.")))
             return
-        vista = ViewSelectDelete(self.guild, self.plugin)
+        view = ViewSelectDelete(self.guild, self.plugin)
         embed = JanoEmbed(
             title="🗑️ Delete instance",
             description="Select the instance to delete.\n\n⚠️ This action is **irreversible**.",
@@ -1440,298 +1426,8 @@ class ViewSetup(BotView):
         for name, st in self.plugin.states.items():
             cat = self.guild.get_channel(st.get_category_id())
             embed.add_field(name=name, value=f"📦 {cat.name if cat else '❌ Not found'}", inline=True)
-        await interaction.response.send_message(embed=embed, view=vista, ephemeral=True)
-        vista.message = await interaction.original_response()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# VIEWS — Channel & role configuration (setup submenus)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class ViewChannels(BotView):
-    def __init__(self, st: InstanceState, guild: discord.Guild):
-        super().__init__(timeout=120)
-        self.st          = st
-        self.guild       = guild
-        self.selections = {"category": None, "text": None, "voice": None}
-        self.type_sel    = None
-
-        select_type = discord.ui.Select(
-            placeholder="Category/Channel — Category or direct channel?",
-            min_values=0, max_values=1, row=0, custom_id="sel_type",
-            options=[
-                discord.SelectOption(label="Discord Category",              value="category", emoji="📦"),
-                discord.SelectOption(label="Direct channel (text or voice)", value="channel",    emoji="💬"),
-            ]
-        )
-        select_type.callback = self._type_callback
-        self.add_item(select_type)
-
-        text_channels = sorted([c for c in guild.channels if isinstance(c, discord.TextChannel)], key=lambda c: c.position)
-        if text_channels:
-            sel_text = discord.ui.Select(
-                placeholder="Text channel for announcements (optional)",
-                min_values=0, max_values=1, row=1, custom_id="sel_text",
-                options=[discord.SelectOption(label="❌ None", value="__none__", description="Clears the value")] +
-                        [discord.SelectOption(label=f"#{c.name}"[:100], value=str(c.id)) for c in text_channels[:24]]
-            )
-            sel_text.callback = self._make_cb("text")
-            self.add_item(sel_text)
-
-        voice_channels = sorted([c for c in guild.channels if isinstance(c, discord.VoiceChannel)], key=lambda c: c.position)
-        if voice_channels:
-            sel_voice = discord.ui.Select(
-                placeholder="Voice channel for announcement embed (optional)",
-                min_values=0, max_values=1, row=2, custom_id="sel_voice",
-                options=[discord.SelectOption(label="❌ None", value="__none__", description="Clears the value")] +
-                        [discord.SelectOption(label=c.name[:100], value=str(c.id)) for c in voice_channels[:24]]
-            )
-            sel_voice.callback = self._make_cb("voice")
-            self.add_item(sel_voice)
-
-        btn = discord.ui.Button(label="Save channels", style=discord.ButtonStyle.success, emoji="💾", row=3)
-        btn.callback = self.confirm_callback
-        self.add_item(btn)
-
-    def _make_cb(self, key: str):
-        async def _cb(interaction: discord.Interaction):
-            for item in self.children:
-                if isinstance(item, discord.ui.Select) and item.custom_id == f"sel_{key}":
-                    val = item.values[0] if item.values else None
-                    self.selections[key] = "__none__" if val == "__none__" else (int(val) if val else None)
-                    break
-            await interaction.response.defer()
-        return _cb
-
-    async def _type_callback(self, interaction: discord.Interaction):
-        for item in self.children:
-            if isinstance(item, discord.ui.Select) and item.custom_id == "sel_type":
-                self.type_sel = item.values[0] if item.values else None
-                break
-        if not self.type_sel:
-            return await interaction.response.defer()
-        if self.type_sel == "category":
-            channels_list = sorted([c for c in self.guild.channels if isinstance(c, discord.CategoryChannel)], key=lambda c: c.position)
-        else:
-            channels_list = sorted([c for c in self.guild.channels if isinstance(c, (discord.TextChannel, discord.VoiceChannel))], key=lambda c: c.position)
-        options = [discord.SelectOption(label=c.name[:100], value=str(c.id)) for c in channels_list[:25]]
-        if not options:
-            return await interaction.response.defer()
-        label = "📦 Select category" if self.type_sel == "category" else "💬 Select channel"
-        embed = JanoEmbed(title=label, color=0x3498DB)
-        picker = ViewCategoryPicker(self, options)
-        await interaction.response.send_message(embed=embed, view=picker, ephemeral=True)
-        picker.message = await interaction.original_response()
-
-    async def confirm_callback(self, interaction: discord.Interaction):
-        changes = []
-        warnings  = []
-        if self.selections["category"]:
-            ch = self.guild.get_channel(self.selections["category"])
-            if ch:
-                prev_cat_id = self.st.get_category_id()
-                self.st.cfg.category_id = ch.id
-                self.st.category_name_cache = None
-                changes.append(f"Category → {ch.name}")
-        if self.selections["text"] == "__none__":
-            self.st.cfg.text_channel_id = None
-            changes.append("Text channel → ❌ None")
-        elif self.selections["text"]:
-            ch = self.guild.get_channel(self.selections["text"])
-            if ch:
-                self.st.cfg.text_channel_id = ch.id
-                changes.append(f"Text channel → #{ch.name}")
-        if self.selections["voice"] == "__none__":
-            self.st.cfg.voice_channel_id = None
-            changes.append("Voice channel → ❌ None")
-        elif self.selections["voice"]:
-            ch = self.guild.get_channel(self.selections["voice"])
-            if ch:
-                self.st.cfg.voice_channel_id = ch.id
-                changes.append(f"Voice channel → #{ch.name}")
-        if changes:
-            await self.st.save()
-        self.stop()
-        if self.message:
-            try:
-                await self.message.edit(embed=JanoEmbed(
-                    title=f"📺 Configure channels — {self.st.cfg.name}",
-                    description="✅ Saved — channels updated successfully.", color=0x2ECC71
-                ), view=None)
-                asyncio.ensure_future(_delete_after(self.message))
-            except Exception:
-                pass
-        embed = JanoEmbed(title=f"📺 Channels updated — {self.st.cfg.name}", color=0x2ECC71)
-        if changes:
-            embed.add_field(name="Changes applied", value="\n".join(changes), inline=False)
-        else:
-            embed.description = "No changes were made."
-        if warnings:
-            embed.add_field(name="\u200b", value="\n".join(warnings), inline=False)
-        asyncio.ensure_future(_reply_ephemeral(interaction, embed=embed))
-
-
-class ViewCategoryPicker(BotView):
-    def __init__(self, parent: ViewChannels, options: list):
-        super().__init__(timeout=120)
-        self.parent = parent
-        select = discord.ui.Select(placeholder="Select an option", min_values=1, max_values=1, row=0, custom_id="sel_cat_pick", options=options)
-        select.callback = self._select_callback
-        self.add_item(select)
-        btn = discord.ui.Button(label="Apply selection", style=discord.ButtonStyle.primary, emoji="↩️", row=1)
-        btn.callback = self._confirmar_callback
-        self.add_item(btn)
-
-    async def _select_callback(self, interaction: discord.Interaction):
-        for item in self.children:
-            if isinstance(item, discord.ui.Select):
-                self.parent.selections["category"] = int(item.values[0]) if item.values else None
-                break
-        await interaction.response.defer()
-
-    async def _confirmar_callback(self, interaction: discord.Interaction):
-        if not self.parent.selections["category"]:
-            return await interaction.response.defer()
-        ch     = self.parent.guild.get_channel(self.parent.selections["category"])
-        name = ch.name if ch else "—"
-        for item in self.parent.children:
-            if isinstance(item, discord.ui.Select) and item.custom_id == "sel_type":
-                item.placeholder = f"✅ Category/Channel: {name}"
-                break
-        self.stop()
-        await interaction.response.defer()
-        if self.message:
-            asyncio.ensure_future(_delete_after(self.message, delay=0))
-        embed = JanoEmbed(title=f"📺 Configure channels — {self.parent.st.cfg.name}", description="Select the channels.", color=0x3498DB)
-        embed.add_field(name="✅ Category / Channel", value=name, inline=False)
-        if self.parent.message:
-            try:
-                await self.parent.message.edit(embed=embed, view=self.parent)
-            except Exception:
-                pass
-
-
-class ViewChannelRoles(BotView):
-    def __init__(self, st: InstanceState, guild: discord.Guild):
-        super().__init__(timeout=120)
-        self.st          = st
-        self.guild       = guild
-        self.selections = {"access": None, "mention": None}
-
-        roles = sorted([r for r in guild.roles if r.name != "@everyone"], key=lambda r: -r.position)
-        role_options = [discord.SelectOption(label=r.name[:100], value=str(r.id)) for r in roles[:24]]
-        vis_options = [discord.SelectOption(label="🌐 @everyone (all)", value="__everyone__", description="All users")] + role_options[:24]
-        men_options = [discord.SelectOption(label="❌ No mention", value="__none__", description="No ping")] + role_options[:24]
-
-        sel_access = discord.ui.Select(placeholder="👁️ Visibility role (empty = no change)", min_values=0, max_values=1, row=0, custom_id="sel_access", options=vis_options)
-        sel_access.callback = self._make_cb("access")
-        self.add_item(sel_access)
-
-        sel_mention = discord.ui.Select(placeholder="📣 Mention role (empty = no change)", min_values=0, max_values=1, row=1, custom_id="sel_mention", options=men_options)
-        sel_mention.callback = self._make_cb("mention")
-        self.add_item(sel_mention)
-
-        btn = discord.ui.Button(label="Save roles", style=discord.ButtonStyle.success, emoji="💾", row=2)
-        btn.callback = self.confirm_callback
-        self.add_item(btn)
-
-    def _make_cb(self, key: str):
-        async def _cb(interaction: discord.Interaction):
-            for item in self.children:
-                if isinstance(item, discord.ui.Select) and item.custom_id == f"sel_{key}":
-                    val = item.values[0] if item.values else None
-                    self.selections[key] = "__none__" if val == "__none__" else (int(val) if val else None)
-                    break
-            await interaction.response.defer()
-        return _cb
-
-    async def confirm_callback(self, interaction: discord.Interaction):
-        changes = []
-        if self.selections["access"] == "__everyone__":
-            self.st.cfg.role_id = None
-            changes.append("Visibility role → 🌐 @everyone")
-        elif self.selections["access"] == "__none__":
-            self.st.cfg.role_id = None
-            changes.append("Visibility role → ❌ None")
-        elif self.selections["access"] is not None:
-            r = self.guild.get_role(self.selections["access"])
-            if r:
-                self.st.cfg.role_id = r.id
-                changes.append(f"Visibility role → {r.name}")
-        if self.selections["mention"] == "__none__":
-            self.st.cfg.mention_role_id = None
-            changes.append("Mention role → ❌ No mention")
-        elif self.selections["mention"] is not None:
-            r = self.guild.get_role(self.selections["mention"])
-            if r:
-                self.st.cfg.mention_role_id = r.id
-                changes.append(f"Mention role → {r.name}")
-        if changes:
-            await self.st.save()
-        self.stop()
-        if self.message:
-            try:
-                await self.message.edit(embed=JanoEmbed(
-                    title=f"👥 Configure roles — {self.st.cfg.name}",
-                    description="✅ Saved — roles updated successfully.", color=0x2ECC71
-                ), view=None)
-                asyncio.ensure_future(_delete_after(self.message))
-            except Exception:
-                pass
-        embed = JanoEmbed(title=f"👥 Roles updated — {self.st.cfg.name}", color=0x2ECC71)
-        if changes:
-            embed.add_field(name="Changes applied", value="\n".join(changes), inline=False)
-        else:
-            embed.description = "No changes were made."
-        asyncio.ensure_future(_reply_ephemeral(interaction, embed=embed))
-
-
-class ModalManualLimit(discord.ui.Modal, title="Configure manual mode limit"):
-    _f_hours = discord.ui.TextInput(
-        label="Max hours (0 = no limit, empty = keep)",
-        placeholder="E.g.: 2.5 · 0 = unlimited · leave empty to keep",
-        required=False, max_length=5
-    )
-
-    def __init__(self, st: InstanceState):
-        super().__init__()
-        self.st = st
-        ceiling = st.active_ceiling()
-        self._f_hours.default = str(ceiling) if ceiling > 0 else "0"
-
-    async def on_submit(self, interaction: discord.Interaction):
-        raw = self._f_hours.value.strip().replace(",", ".")
-        if not raw:
-            ceiling = self.st.active_ceiling()
-            embed = JanoEmbed(title=f"⏱️ Manual limit — {self.st.cfg.name}", color=0x3498DB)
-            embed.description = "No changes were made."
-            embed.add_field(name="Current maximum", value=f"**{ceiling}h**" if ceiling > 0 else "**No limit**", inline=False)
-            asyncio.ensure_future(_reply_ephemeral(interaction, embed=embed))
-            return
-        try:
-            val = float(raw)
-            if val < 0:
-                raise ValueError
-        except ValueError:
-            await interaction.response.send_message("❌ Invalid value. Enter a positive number or 0 for no limit.", ephemeral=True, delete_after=120)
-            return
-        old_ceiling = self.st.active_ceiling()
-        self.st.max_hours_override = val if val > 0 else 0
-        await self.st.save()
-        trim_warning = None
-        if self.st.manual_override is not None and self.st.manual_hours_active > 0:
-            new_ceiling = self.st.active_ceiling()
-            if new_ceiling > 0 and self.st.manual_hours_active > new_ceiling:
-                duracion_anterior = self.st.manual_hours_active
-                self.st.manual_hours_active = new_ceiling
-                await self.st.save()
-                trim_warning = (duracion_anterior, new_ceiling)
-        embed = JanoEmbed(title=f"⏱️ Manual limit updated — {self.st.cfg.name}", color=0x2ECC71)
-        embed.add_field(name="Previous maximum", value=f"**{old_ceiling}h**" if old_ceiling > 0 else "**No limit**", inline=False)
-        embed.add_field(name="New maximum",      value=f"**{val}h**" if val > 0 else "**No limit**", inline=False)
-        if trim_warning:
-            embed.add_field(name="⚠️ Active duration adjusted", value=f"Was **{trim_warning[0]}h** → trimmed to **{trim_warning[1]}h**.", inline=False)
-        asyncio.ensure_future(_reply_ephemeral(interaction, embed=embed))
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        view.message = await interaction.original_response()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1770,19 +1466,19 @@ class ViewSelectDelete(BotView):
 
 
 class ModalConfirmDelete(discord.ui.Modal, title="⚠️ Confirm deletion"):
-    confirmacion = discord.ui.TextInput(label='Type DELETE to confirm', placeholder="DELETE", required=True, max_length=10)
+    confirmation = discord.ui.TextInput(label='Type DELETE to confirm', placeholder="DELETE", required=True, max_length=10)
 
     def __init__(self, name: str, is_last: bool, plugin: Jano):
         super().__init__()
         self.name    = name
         self.is_last = is_last
         self.plugin    = plugin
-        titulo = f"Delete '{name}' — type DELETE"
-        if len(titulo) <= 45:
-            self.title = titulo
+        title_text = f"Delete '{name}' — type DELETE"
+        if len(title_text) <= 45:
+            self.title = title_text
 
     async def on_submit(self, interaction: discord.Interaction):
-        if self.confirmacion.value.strip() != "DELETE":
+        if self.confirmation.value.strip() != "DELETE":
             await interaction.response.send_message(
                 "❌ Incorrect confirmation. Instance was **not** deleted.", ephemeral=True, delete_after=120
             )
@@ -1914,7 +1610,7 @@ class WizardStep1Name(discord.ui.Modal, title="Instance name & Status Icon"):
     def __init__(self, plugin: Jano):
         super().__init__()
         self.plugin = plugin
-        self._f_nombre = discord.ui.TextInput(
+        self._f_name = discord.ui.TextInput(
             label="Instance name (required)",
             placeholder="E.g.: Missions, Training, Events...",
             required=True, max_length=32
@@ -1924,11 +1620,11 @@ class WizardStep1Name(discord.ui.Modal, title="Instance name & Status Icon"):
             placeholder="yes = show 🟢🔴 on category  |  no = keep original name  |  default: no",
             required=False, max_length=5
         )
-        self.add_item(self._f_nombre)
+        self.add_item(self._f_name)
         self.add_item(self._f_status)
 
     async def on_submit(self, interaction: discord.Interaction):
-        name = self._f_nombre.value.strip()
+        name = self._f_name.value.strip()
         if name in self.plugin.states:
             await interaction.response.send_message(f"❌ An instance named **{name}** already exists.", ephemeral=True, delete_after=120)
             return
@@ -1936,13 +1632,13 @@ class WizardStep1Name(discord.ui.Modal, title="Instance name & Status Icon"):
         data.name      = name
         data.status_icon = _parse_status_icon(self._f_status.value, default=False)
         guild = self.plugin._get_guild()
-        vista = WizardStep2Channels(data, guild, self.plugin)
+        view = WizardStep2Channels(data, guild, self.plugin)
         embed = _wizard_embed(2, name, "Select the channels for this instance.\n\n**Category/Channel** is required.\nText and voice channels are optional.")
         embed.add_field(name="📦 Category / Channel", value="*Required — what the bot will open and close*", inline=False)
         embed.add_field(name="💬 Text channel",       value="*Channel for opening announcements (optional)*", inline=False)
         embed.add_field(name="🔊 Voice channel",      value="*Voice channel shown in the announcement (optional)*", inline=False)
-        await interaction.response.send_message(embed=embed, view=vista, ephemeral=True)
-        vista.message = await interaction.original_response()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        view.message = await interaction.original_response()
 
 
 # ── Step 2: Channels ──────────────────────────────────────────────────────────
@@ -2036,7 +1732,7 @@ class WizardStep2Channels(BotView):
             msg = await interaction.original_response()
             asyncio.ensure_future(_delete_after(msg, delay=10))
             return
-        vista = WizardStep3Roles(self.data, self.guild, self.plugin, edit_mode=self.edit_mode)
+        view = WizardStep3Roles(self.data, self.guild, self.plugin, edit_mode=self.edit_mode)
         if self.edit_mode:
             embed = _wizard_edit_embed(3, self.data.name, "Update the roles. Leave selects untouched to keep current values.")
             r = self.guild.get_role(self.data.role_id) if self.data.role_id else None
@@ -2049,10 +1745,10 @@ class WizardStep2Channels(BotView):
             embed.add_field(name="📣 Mention role",    value="*Role pinged when channels open on schedule (optional)*", inline=False)
         embed_closed = JanoEmbed(description="✅ Channels saved — continuing to roles...", color=0x2ECC71)
         await interaction.response.edit_message(embed=embed_closed, view=None)
-        msg_cerrado = await interaction.original_response()
-        asyncio.ensure_future(_delete_after(msg_cerrado, delay=3))
-        msg = await interaction.followup.send(embed=embed, view=vista, ephemeral=True, wait=True)
-        vista.message = msg
+        msg_closed = await interaction.original_response()
+        asyncio.ensure_future(_delete_after(msg_closed, delay=3))
+        msg = await interaction.followup.send(embed=embed, view=view, ephemeral=True, wait=True)
+        view.message = msg
 
 
 class WizardCategoryPicker(BotView):
@@ -2063,7 +1759,7 @@ class WizardCategoryPicker(BotView):
         select.callback = self._select_callback
         self.add_item(select)
         btn = discord.ui.Button(label="Apply selection", style=discord.ButtonStyle.primary, emoji="↩️", row=1)
-        btn.callback = self._confirmar_callback
+        btn.callback = self._confirm_callback
         self.add_item(btn)
 
     async def _select_callback(self, interaction: discord.Interaction):
@@ -2073,7 +1769,7 @@ class WizardCategoryPicker(BotView):
                 break
         await interaction.response.defer()
 
-    async def _confirmar_callback(self, interaction: discord.Interaction):
+    async def _confirm_callback(self, interaction: discord.Interaction):
         if not self.parent.data.category_id:
             return await interaction.response.defer()
         ch     = self.parent.guild.get_channel(self.parent.data.category_id)
@@ -2195,36 +1891,36 @@ class WizardStep4Schedule(discord.ui.Modal):
         self.data    = data
         self.plugin  = plugin
         self.summary = summary
-        self._f_dias = discord.ui.TextInput(
+        self._f_days = discord.ui.TextInput(
             label="Active days (empty = manual mode only)",
             placeholder="E.g.: 0,1,2,3,4  (0=Mon, 6=Sun)",
             required=False, max_length=20,
             default=",".join(str(d) for d in data.active_days) if data.active_days else ""
         )
-        self._f_apertura = discord.ui.TextInput(
+        self._f_opening = discord.ui.TextInput(
             label="Opening time (HH:MM)",
             placeholder="E.g.: 18:15",
             required=False, max_length=5,
             default=data.opening_time if data.active_days else ""
         )
-        self._f_cierre = discord.ui.TextInput(
+        self._f_closing = discord.ui.TextInput(
             label="Closing time (HH:MM)",
             placeholder="E.g.: 21:30",
             required=False, max_length=5,
             default=data.closing_time if data.active_days else ""
         )
-        self._f_horas = discord.ui.TextInput(
+        self._f_hours = discord.ui.TextInput(
             label="Max manual hours (0 or empty = no limit)",
             placeholder="E.g.: 2.5",
             required=False, max_length=5,
             default=str(data.max_manual_hours) if data.max_manual_hours > 0 else ""
         )
-        for f in [self._f_dias, self._f_apertura, self._f_cierre, self._f_horas]:
+        for f in [self._f_days, self._f_opening, self._f_closing, self._f_hours]:
             self.add_item(f)
 
     async def _send_error(self, interaction, error: str):
         """Send ephemeral error message with button to reopen modal with pre-filled data."""
-        vista = ViewRetry(
+        view = ViewRetry(
             modal_class=WizardStep4Schedule,
             modal_kwargs={"data": self.data, "plugin": self.plugin, "summary": self.summary},
             error=error
@@ -2234,19 +1930,19 @@ class WizardStep4Schedule(discord.ui.Modal):
             description=f"**{error}**\n\nPress the button below to go back and correct it.",
             color=0xE74C3C
         )
-        await interaction.response.send_message(embed=embed, view=vista, ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         try:
-            vista.message = await interaction.original_response()
+            view.message = await interaction.original_response()
         except Exception:
             pass
 
 
     async def on_submit(self, interaction: discord.Interaction):
         data         = self.data
-        days_raw     = self._f_dias.value.strip()
-        opening_raw = self._f_apertura.value.strip()
-        closing_raw   = self._f_cierre.value.strip()
-        hours_raw    = self._f_horas.value.strip().replace(",", ".")
+        days_raw     = self._f_days.value.strip()
+        opening_raw = self._f_opening.value.strip()
+        closing_raw   = self._f_closing.value.strip()
+        hours_raw    = self._f_hours.value.strip().replace(",", ".")
         pattern = re.compile(r"^\d{1,2}:\d{2}$")
         if days_raw:
             if not opening_raw or not closing_raw:
@@ -2303,10 +1999,10 @@ class WizardStep4Schedule(discord.ui.Modal):
                 ), ephemeral=True, delete_after=10)
             return
         guild = self.plugin._get_guild()
-        vista = WizardStep5Summary(data, guild, self.plugin)
+        view = WizardStep5Summary(data, guild, self.plugin)
         embed = _wizard_summary_embed(data, guild)
-        await interaction.response.send_message(embed=embed, view=vista, ephemeral=True)
-        vista.message = await interaction.original_response()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        view.message = await interaction.original_response()
 
 
 class WizardEditStep4Schedule(discord.ui.Modal):
@@ -2315,35 +2011,35 @@ class WizardEditStep4Schedule(discord.ui.Modal):
         super().__init__(title="📅 Schedule & Limit")
         self.data   = data
         self.plugin = plugin
-        self._f_dias = discord.ui.TextInput(
+        self._f_days = discord.ui.TextInput(
             label="Active days (empty = keep current)",
             placeholder="E.g.: 0,1,2,3,4  (0=Mon, 6=Sun)",
             required=False, max_length=20,
             default=",".join(str(d) for d in data.active_days) if data.active_days else ""
         )
-        self._f_apertura = discord.ui.TextInput(
+        self._f_opening = discord.ui.TextInput(
             label="Opening time HH:MM (empty = keep current)",
             placeholder="E.g.: 18:15",
             required=False, max_length=5,
             default=data.opening_time if data.active_days else ""
         )
-        self._f_cierre = discord.ui.TextInput(
+        self._f_closing = discord.ui.TextInput(
             label="Closing time HH:MM (empty = keep current)",
             placeholder="E.g.: 21:30",
             required=False, max_length=5,
             default=data.closing_time if data.active_days else ""
         )
-        self._f_horas = discord.ui.TextInput(
+        self._f_hours = discord.ui.TextInput(
             label="Max manual hours (empty = keep current)",
             placeholder="E.g.: 2.5  |  0 = no limit",
             required=False, max_length=5,
             default=str(data.max_manual_hours) if data.max_manual_hours > 0 else "0"
         )
-        for f in [self._f_dias, self._f_apertura, self._f_cierre, self._f_horas]:
+        for f in [self._f_days, self._f_opening, self._f_closing, self._f_hours]:
             self.add_item(f)
 
     async def _send_error(self, interaction, error: str):
-        vista = ViewRetry(
+        view = ViewRetry(
             modal_class=WizardEditStep4Schedule,
             modal_kwargs={"data": self.data, "plugin": self.plugin},
             error=error
@@ -2353,19 +2049,19 @@ class WizardEditStep4Schedule(discord.ui.Modal):
             description=f"**{error}**\n\nPress the button below to go back and correct it.",
             color=0xE74C3C
         )
-        await interaction.response.send_message(embed=embed, view=vista, ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         try:
-            vista.message = await interaction.original_response()
+            view.message = await interaction.original_response()
         except Exception:
             pass
 
 
     async def on_submit(self, interaction: discord.Interaction):
         data         = self.data
-        days_raw     = self._f_dias.value.strip()
-        opening_raw = self._f_apertura.value.strip()
-        closing_raw   = self._f_cierre.value.strip()
-        hours_raw    = self._f_horas.value.strip().replace(",", ".")
+        days_raw     = self._f_days.value.strip()
+        opening_raw = self._f_opening.value.strip()
+        closing_raw   = self._f_closing.value.strip()
+        hours_raw    = self._f_hours.value.strip().replace(",", ".")
         pattern = re.compile(r"^\d{1,2}:\d{2}$")
         if days_raw:
             open_t = opening_raw or data.opening_time
@@ -2398,10 +2094,10 @@ class WizardEditStep4Schedule(discord.ui.Modal):
                 await self._send_error(interaction, "Invalid duration — enter a positive number (e.g. 2.5) or 0 for no limit")
                 return
         guild = self.plugin._get_guild()
-        vista = WizardEditStep5Summary(data, guild, self.plugin)
+        view = WizardEditStep5Summary(data, guild, self.plugin)
         embed = _wizard_summary_embed(data, guild, edit_mode=True)
-        await interaction.response.send_message(embed=embed, view=vista, ephemeral=True)
-        vista.message = await interaction.original_response()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        view.message = await interaction.original_response()
 
 
 class WizardStep5Summary(BotView):
@@ -2425,11 +2121,11 @@ class WizardStep5Summary(BotView):
 
         lbl = "💾 Save changes" if edit_mode else "✅ Create instance"
         btn_ok = discord.ui.Button(label=lbl, style=discord.ButtonStyle.success, row=1)
-        btn_ok.callback = self._confirmar
+        btn_ok.callback = self._confirm
         self.add_item(btn_ok)
 
         btn_cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌", row=1)
-        btn_cancel.callback = self._cancelar
+        btn_cancel.callback = self._cancel
         self.add_item(btn_cancel)
 
     async def _update_summary(self, interaction: discord.Interaction):
@@ -2442,24 +2138,24 @@ class WizardStep5Summary(BotView):
         await interaction.response.send_modal(WizardEditName(self))
 
     async def _edit_channels(self, interaction: discord.Interaction):
-        vista = WizardStep2Channels(self.data, self.guild, self.plugin, summary=self)
+        view = WizardStep2Channels(self.data, self.guild, self.plugin, summary=self)
         embed = _wizard_embed(2, self.data.name, "Update the channels.")
         cat = self.guild.get_channel(self.data.category_id)
         if cat:
             embed.add_field(name="✅ Current Category / Channel", value=f"**{cat.name}**", inline=False)
-        await interaction.response.send_message(embed=embed, view=vista, ephemeral=True)
-        vista.message = await interaction.original_response()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        view.message = await interaction.original_response()
 
     async def _edit_roles(self, interaction: discord.Interaction):
-        vista = WizardStep3Roles(self.data, self.guild, self.plugin, summary=self)
+        view = WizardStep3Roles(self.data, self.guild, self.plugin, summary=self)
         embed = _wizard_embed(3, self.data.name, "Update the roles.")
-        await interaction.response.send_message(embed=embed, view=vista, ephemeral=True)
-        vista.message = await interaction.original_response()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        view.message = await interaction.original_response()
 
     async def _edit_schedule(self, interaction: discord.Interaction):
         await interaction.response.send_modal(WizardStep4Schedule(self.data, self.plugin, summary=self))
 
-    async def _confirmar(self, interaction: discord.Interaction):
+    async def _confirm(self, interaction: discord.Interaction):
         self.stop()
         d = self.data
         if self.edit_mode:
@@ -2490,7 +2186,6 @@ class WizardStep5Summary(BotView):
             ), ephemeral=True, delete_after=120)
             log.info(f"[Jano] Instance '{d.name}' edited by {interaction.user}")
         else:
-            primera = len(self.plugin.states) == 0
             cfg = InstanceConfig(
                 name=d.name, server_id=self.plugin._server_id,
                 category_id=d.category_id, role_id=d.role_id,
@@ -2526,7 +2221,7 @@ class WizardStep5Summary(BotView):
         except Exception as e:
             log.error(f"[Jano] Error renaming instance in DB: {e}")
 
-    async def _cancelar(self, interaction: discord.Interaction):
+    async def _cancel(self, interaction: discord.Interaction):
         self.stop()
         if self.message:
             try:
@@ -2543,7 +2238,7 @@ class WizardEditName(discord.ui.Modal, title="Name & Status Icon"):
         super().__init__()
         self.summary = summary
         # Store field references as instance attributes for access in on_submit
-        self._f_nombre = discord.ui.TextInput(
+        self._f_name = discord.ui.TextInput(
             label="Instance name (empty = keep current)",
             placeholder="Leave empty to keep current name",
             required=False,
@@ -2557,11 +2252,11 @@ class WizardEditName(discord.ui.Modal, title="Name & Status Icon"):
             max_length=5,
             default="yes" if summary.data.status_icon else "no",
         )
-        self.add_item(self._f_nombre)
+        self.add_item(self._f_name)
         self.add_item(self._f_status)
 
     async def on_submit(self, interaction: discord.Interaction):
-        new_name = self._f_nombre.value.strip()
+        new_name = self._f_name.value.strip()
         # Empty name = keep current
         if not new_name:
             new_name = self.summary.data.name
@@ -2596,14 +2291,14 @@ class WizardEditStep5Summary(BotView):
         self.plugin = plugin
 
         btn_ok = discord.ui.Button(label="Save changes", style=discord.ButtonStyle.success, emoji="💾", row=0)
-        btn_ok.callback = self._confirmar
+        btn_ok.callback = self._confirm
         self.add_item(btn_ok)
 
         btn_cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌", row=0)
-        btn_cancel.callback = self._cancelar
+        btn_cancel.callback = self._cancel
         self.add_item(btn_cancel)
 
-    async def _confirmar(self, interaction: discord.Interaction):
+    async def _confirm(self, interaction: discord.Interaction):
         self.stop()
         d, st, cfg = self.data, self.data.st, self.data.st.cfg
         old_name = cfg.name
@@ -2612,6 +2307,7 @@ class WizardEditStep5Summary(BotView):
         cfg.mention_role_id, cfg.active_days      = d.mention_role_id, d.active_days
         cfg.opening_time, cfg.closing_time         = d.opening_time, d.closing_time
         cfg.max_manual_hours                       = d.max_manual_hours
+        cfg.status_icon                            = d.status_icon
         if d.name != old_name and old_name in self.plugin.states:
             self.plugin.states[d.name] = self.plugin.states.pop(old_name)
             asyncio.ensure_future(self._rename_in_db(old_name, d.name))
@@ -2633,7 +2329,7 @@ class WizardEditStep5Summary(BotView):
         except Exception as e:
             log.error(f"[Jano] Error renaming in DB: {e}")
 
-    async def _cancelar(self, interaction: discord.Interaction):
+    async def _cancel(self, interaction: discord.Interaction):
         self.stop()
         if self.message:
             await self._close_message(JanoEmbed(description="❌ Edit cancelled. No changes made.", color=0x95A5A6))
