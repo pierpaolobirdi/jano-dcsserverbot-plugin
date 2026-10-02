@@ -403,7 +403,7 @@ class Jano(Plugin):
 
     async def cog_load(self) -> None:
         await super().cog_load()
-        self.log.debug("Plugin loading...")
+        self.log.debug("  => Plugin loading...")
         cfg = self.get_config() or {}
 
         # Timezone — stored on self, never on a module global
