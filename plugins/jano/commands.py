@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
-COMMANDS_VERSION = "4.0.5"
+COMMANDS_VERSION = "5.0.0"
 
 _MAX_INSTANCES = 4
 
