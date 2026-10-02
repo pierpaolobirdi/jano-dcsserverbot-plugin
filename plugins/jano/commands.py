@@ -924,14 +924,19 @@ class Jano(Plugin):
         instance="Instance to act on (auto-selected if only one exists)",
         action="What to do: open channels, close them, or resume automatic schedule"
     )
+    @app_commands.choices(action=[
+        app_commands.Choice(name="open  — manually open channels",  value="open"),
+        app_commands.Choice(name="close — manually close channels", value="close"),
+        app_commands.Choice(name="resume — return to schedule",     value="resume"),
+    ])
     async def jano_comms(self, interaction: discord.Interaction, instance: str = None, action: str = None):
         st = await self._prepare(interaction, instance)
         if not st:
             return
 
-        if action not in ("open", "close", "resume"):
+        if not action:
             await interaction.response.send_message(
-                "❌ Invalid action. Choose: **open**, **close** or **resume**.",
+                "❌ Choose an action: **open**, **close** or **resume**.",
                 ephemeral=True, delete_after=60
             )
             return
@@ -943,15 +948,6 @@ class Jano(Plugin):
             await self._comms_close(interaction, st)
         else:
             await self._comms_resume(interaction, st)
-
-    @jano_comms.autocomplete("action")
-    async def _ac_comms_action(self, interaction: discord.Interaction, current: str):
-        actions = [
-            app_commands.Choice(name="open  — manually open channels",   value="open"),
-            app_commands.Choice(name="close — manually close channels",  value="close"),
-            app_commands.Choice(name="resume — return to schedule",      value="resume"),
-        ]
-        return [a for a in actions if current.lower() in a.name.lower()]
 
     async def _comms_open(self, interaction: discord.Interaction, st: InstanceState, duration_val: float | None = None):
         if st.current_state and st.manual_override is True:
