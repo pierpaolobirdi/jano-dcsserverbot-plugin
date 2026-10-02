@@ -33,6 +33,20 @@ log = logging.getLogger(__name__)
 # stays scoped to the plugin instance and does not leak across hot-reloads.
 _DEFAULT_TZ = "Europe/Madrid"
 
+# Internal version of this file only — updated manually in commands.py, independent of version.py.
+COMMANDS_VERSION = "4.0.1"
+
+_FOOTER_SEPARATOR = "▬" * 36
+EMBED_FOOTER = f"{_FOOTER_SEPARATOR}\nJano v.{COMMANDS_VERSION}"
+
+
+class JanoEmbed(discord.Embed):
+    """discord.Embed that always carries the Jano footer (separator + version)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.set_footer(text=EMBED_FOOTER)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATA MODEL — InstanceConfig + InstanceState
@@ -776,7 +790,7 @@ class Jano(Plugin):
                             f"Before the start of **{inst_name}**."
                         )
                         desc = _fmt(tpl.get("body", body_default))
-                        embed = discord.Embed(title=title, description=desc, color=0x2ECC71)
+                        embed = JanoEmbed(title=title, description=desc, color=0x2ECC71)
                         mention_id = st.get_mention_role_id()
                         contenido  = f"<@&{mention_id}>" if mention_id else None
                         msg = await text_ch.send(
@@ -836,7 +850,7 @@ class Jano(Plugin):
 
     async def _check_instances(self, interaction: discord.Interaction, instance: str = None) -> bool:
         if not self.states or instance == "__none__":
-            embed = discord.Embed(
+            embed = JanoEmbed(
                 title="⚠️ No instances configured",
                 description="No instances have been set up yet.\nUse **/jano setup** to create your first instance.",
                 color=0xE67E22
@@ -870,7 +884,7 @@ class Jano(Plugin):
         state_txt = "🟢 Open" if st.current_state else "🔴 Closed"
         mode_txt   = "Manual" if st.manual_override is not None else "Schedule"
 
-        embed = discord.Embed(title=f"📊 Status — {st.cfg.name}", color=0x3498DB)
+        embed = JanoEmbed(title=f"📊 Status — {st.cfg.name}", color=0x3498DB)
         embed.add_field(name="__**Status**__",  value=f"*Current open/close state*\n{state_txt}", inline=False)
         embed.add_field(name="__**Mode**__",    value=f"*Schedule = automatic, Manual = forced*\n**{mode_txt}**", inline=False)
 
@@ -1011,7 +1025,7 @@ class Jano(Plugin):
 
         if st.current_state and st.manual_override is True:
             if duration_val is None:
-                embed = discord.Embed(
+                embed = JanoEmbed(
                     title=f"🟢 Already open — {st.cfg.name}",
                     description="The channels are already open in manual mode. No changes made.",
                     color=0x95A5A6
@@ -1024,7 +1038,7 @@ class Jano(Plugin):
                 await st.save()
                 info    = st.manual_mode_info()
                 ceiling = st.active_ceiling()
-                embed   = discord.Embed(
+                embed   = JanoEmbed(
                     title=f"⏱️ Duration updated — {st.cfg.name}",
                     description="Channels remain open. Duration updated.",
                     color=0x3498DB
@@ -1048,7 +1062,7 @@ class Jano(Plugin):
         info    = st.manual_mode_info()
         ceiling = st.active_ceiling()
 
-        embed = discord.Embed(
+        embed = JanoEmbed(
             title=f"🟡 Opening access... — {st.cfg.name}",
             description="⏳ Applying changes. Category status may take a moment to update.",
             color=0xF1C40F
@@ -1067,7 +1081,7 @@ class Jano(Plugin):
 
         async def apply_and_confirm():
             await self._evaluate_instance(st)
-            embed_ok = discord.Embed(
+            embed_ok = JanoEmbed(
                 title=f"🟢 Access opened — {st.cfg.name}",
                 description="✅ Changes applied successfully.",
                 color=0x2ECC71
@@ -1094,7 +1108,7 @@ class Jano(Plugin):
         await interaction.response.defer(ephemeral=True)
 
         if not st.current_state and st.manual_override is None:
-            embed = discord.Embed(
+            embed = JanoEmbed(
                 title=f"🔴 Already closed — {st.cfg.name}",
                 description="Channels already closed and running on schedule. No changes made.",
                 color=0x95A5A6
@@ -1107,7 +1121,7 @@ class Jano(Plugin):
         await self._evaluate_instance(st)
 
         info  = st.manual_mode_info()
-        embed = discord.Embed(
+        embed = JanoEmbed(
             title=f"🔴 Access closed — {st.cfg.name}",
             description="✅ Access closed successfully.",
             color=0xE74C3C
@@ -1141,7 +1155,7 @@ class Jano(Plugin):
         await self._evaluate_instance(st)
         is_open, _ = st.compute_desired_state()
         state_txt = "🟢 Open" if is_open else "🔴 Closed"
-        embed = discord.Embed(
+        embed = JanoEmbed(
             title=f"{title} — {st.cfg.name}",
             description="Control returns to the configured automatic schedule.",
             color=0x3498DB
@@ -1167,7 +1181,7 @@ class Jano(Plugin):
 
         if not self.states:
             vista = ViewSetupEmpty(guild, self)
-            embed = discord.Embed(
+            embed = JanoEmbed(
                 title="⚙️ Setup — First time configuration",
                 description="No instances configured yet.\n\nAn **instance** is a set of channels the bot will manage — opening and closing on a schedule or manually.\n\nPress **➕ New instance** to create your first one.",
                 color=0xE67E22
@@ -1190,7 +1204,7 @@ class Jano(Plugin):
             return
 
         vista = ViewSetup(st, is_global, guild, self)
-        embed = discord.Embed(
+        embed = JanoEmbed(
             title=f"⚙️ Setup — {st.cfg.name}",
             description="What would you like to configure?",
             color=0x3498DB
@@ -1212,7 +1226,7 @@ def _fmt_duration(td: datetime.timedelta) -> str:
     return f"{total_min // 60}:{total_min % 60:02d}"
 
 def _no_permission(msg: str = "❌ You do not have permission to use this command.") -> discord.Embed:
-    return discord.Embed(description=msg, color=0xE67E22)
+    return JanoEmbed(description=msg, color=0xE67E22)
 
 async def _delete_after(message: discord.Message, delay: int = 120):
     await asyncio.sleep(delay)
@@ -1288,7 +1302,7 @@ class BotView(discord.ui.View):
 
     async def on_timeout(self):
         await self._close_message(
-            discord.Embed(description="⏱️ Interaction expired — use the command again if needed.", color=0x95A5A6),
+            JanoEmbed(description="⏱️ Interaction expired — use the command again if needed.", color=0x95A5A6),
             delete_after=30
         )
 
@@ -1314,7 +1328,7 @@ class ViewCloseConfirm(BotView):
             desc     = f"Channels will return to automatic schedule in **{remaining}** (at **{expira}**)."
         else:
             desc = "Channels will remain closed in manual mode with no time limit."
-        embed = discord.Embed(
+        embed = JanoEmbed(
             title=f"🔴 Access closed — {self.st.cfg.name}",
             description=desc,
             color=0xE74C3C
@@ -1382,7 +1396,7 @@ class ViewSetup(BotView):
     @discord.ui.button(label="Command roles", style=discord.ButtonStyle.primary, emoji="🔑", row=0)
     async def configure_access_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
         view_roles = ViewAccessRoles(self.guild, self.plugin)
-        embed = discord.Embed(
+        embed = JanoEmbed(
             title="🔑 Configure command roles per instance",
             description="Select the roles for each instance.\n\n⚠️ **Your selection replaces current roles entirely.**\n\nIf you skip an instance, it will not be modified.",
             color=0x9B59B6
@@ -1417,7 +1431,7 @@ class ViewSetup(BotView):
             asyncio.ensure_future(_reply_ephemeral(interaction, embed=_no_permission("❌ Only admin roles can delete instances.")))
             return
         vista = ViewSelectDelete(self.guild, self.plugin)
-        embed = discord.Embed(
+        embed = JanoEmbed(
             title="🗑️ Delete instance",
             description="Select the instance to delete.\n\n⚠️ This action is **irreversible**.",
             color=0xE74C3C
@@ -1503,7 +1517,7 @@ class ViewChannels(BotView):
         if not options:
             return await interaction.response.defer()
         label = "📦 Select category" if self.type_sel == "category" else "💬 Select channel"
-        embed = discord.Embed(title=label, color=0x3498DB)
+        embed = JanoEmbed(title=label, color=0x3498DB)
         picker = ViewCategoryPicker(self, options)
         await interaction.response.send_message(embed=embed, view=picker, ephemeral=True)
         picker.message = await interaction.original_response()
@@ -1539,14 +1553,14 @@ class ViewChannels(BotView):
         self.stop()
         if self.message:
             try:
-                await self.message.edit(embed=discord.Embed(
+                await self.message.edit(embed=JanoEmbed(
                     title=f"📺 Configure channels — {self.st.cfg.name}",
                     description="✅ Saved — channels updated successfully.", color=0x2ECC71
                 ), view=None)
                 asyncio.ensure_future(_delete_after(self.message))
             except Exception:
                 pass
-        embed = discord.Embed(title=f"📺 Channels updated — {self.st.cfg.name}", color=0x2ECC71)
+        embed = JanoEmbed(title=f"📺 Channels updated — {self.st.cfg.name}", color=0x2ECC71)
         if changes:
             embed.add_field(name="Changes applied", value="\n".join(changes), inline=False)
         else:
@@ -1587,7 +1601,7 @@ class ViewCategoryPicker(BotView):
         await interaction.response.defer()
         if self.message:
             asyncio.ensure_future(_delete_after(self.message, delay=0))
-        embed = discord.Embed(title=f"📺 Configure channels — {self.parent.st.cfg.name}", description="Select the channels.", color=0x3498DB)
+        embed = JanoEmbed(title=f"📺 Configure channels — {self.parent.st.cfg.name}", description="Select the channels.", color=0x3498DB)
         embed.add_field(name="✅ Category / Channel", value=name, inline=False)
         if self.parent.message:
             try:
@@ -1656,14 +1670,14 @@ class ViewChannelRoles(BotView):
         self.stop()
         if self.message:
             try:
-                await self.message.edit(embed=discord.Embed(
+                await self.message.edit(embed=JanoEmbed(
                     title=f"👥 Configure roles — {self.st.cfg.name}",
                     description="✅ Saved — roles updated successfully.", color=0x2ECC71
                 ), view=None)
                 asyncio.ensure_future(_delete_after(self.message))
             except Exception:
                 pass
-        embed = discord.Embed(title=f"👥 Roles updated — {self.st.cfg.name}", color=0x2ECC71)
+        embed = JanoEmbed(title=f"👥 Roles updated — {self.st.cfg.name}", color=0x2ECC71)
         if changes:
             embed.add_field(name="Changes applied", value="\n".join(changes), inline=False)
         else:
@@ -1688,7 +1702,7 @@ class ModalManualLimit(discord.ui.Modal, title="Configure manual mode limit"):
         raw = self._f_hours.value.strip().replace(",", ".")
         if not raw:
             ceiling = self.st.active_ceiling()
-            embed = discord.Embed(title=f"⏱️ Manual limit — {self.st.cfg.name}", color=0x3498DB)
+            embed = JanoEmbed(title=f"⏱️ Manual limit — {self.st.cfg.name}", color=0x3498DB)
             embed.description = "No changes were made."
             embed.add_field(name="Current maximum", value=f"**{ceiling}h**" if ceiling > 0 else "**No limit**", inline=False)
             asyncio.ensure_future(_reply_ephemeral(interaction, embed=embed))
@@ -1711,7 +1725,7 @@ class ModalManualLimit(discord.ui.Modal, title="Configure manual mode limit"):
                 self.st.manual_hours_active = new_ceiling
                 await self.st.save()
                 trim_warning = (duracion_anterior, new_ceiling)
-        embed = discord.Embed(title=f"⏱️ Manual limit updated — {self.st.cfg.name}", color=0x2ECC71)
+        embed = JanoEmbed(title=f"⏱️ Manual limit updated — {self.st.cfg.name}", color=0x2ECC71)
         embed.add_field(name="Previous maximum", value=f"**{old_ceiling}h**" if old_ceiling > 0 else "**No limit**", inline=False)
         embed.add_field(name="New maximum",      value=f"**{val}h**" if val > 0 else "**No limit**", inline=False)
         if trim_warning:
@@ -1779,13 +1793,13 @@ class ModalConfirmDelete(discord.ui.Modal, title="⚠️ Confirm deletion"):
         await self.plugin._delete_instance(name)
         log.info(f"[Jano] 🗑️ Instance '{name}' deleted by {interaction.user}")
         if self.is_last:
-            embed = discord.Embed(
+            embed = JanoEmbed(
                 title=f"🗑️ Instance '{name}' deleted",
                 description="⚠️ **This was the last instance.**\n\nUse **/jano setup** to create a new one.",
                 color=0xE74C3C
             )
         else:
-            embed = discord.Embed(
+            embed = JanoEmbed(
                 title=f"✅ Instance '{name}' deleted",
                 description=f"Remaining: {', '.join(self.plugin.states.keys())}",
                 color=0x2ECC71
@@ -1834,11 +1848,11 @@ class WizardData:
 
 def _wizard_embed(step: int, name: str, description: str) -> discord.Embed:
     titles = {2: "📺 Channels", 3: "👥 Roles", 6: "📋 Summary"}
-    return discord.Embed(title=f"⚙️ '{name}' — {titles.get(step, f'Step {step}')}", description=description, color=0x3498DB)
+    return JanoEmbed(title=f"⚙️ '{name}' — {titles.get(step, f'Step {step}')}", description=description, color=0x3498DB)
 
 def _wizard_edit_embed(step: int, name: str, description: str) -> discord.Embed:
     titles = {2: "📺 Channels", 3: "👥 Roles", 4: "📅 Schedule & Limit", 5: "📋 Summary"}
-    return discord.Embed(title=f"✏️ '{name}' — {titles.get(step, f'Step {step}')}", description=description, color=0x3498DB)
+    return JanoEmbed(title=f"✏️ '{name}' — {titles.get(step, f'Step {step}')}", description=description, color=0x3498DB)
 
 def _wizard_summary_embed(data: WizardData, guild: discord.Guild, edit_mode=False) -> discord.Embed:
     day_map = {0:"Mon",1:"Tue",2:"Wed",3:"Thu",4:"Fri",5:"Sat",6:"Sun"}
@@ -1848,7 +1862,7 @@ def _wizard_summary_embed(data: WizardData, guild: discord.Guild, edit_mode=Fals
         title, description = f"📋 Review changes — '{data.name}'", "Review changes. Press **💾 Save changes** to confirm."
     else:
         title, description = f"📋 Review — '{data.name}'", "Review settings. Press **✅ Create instance** to confirm."
-    embed = discord.Embed(title=title, description=description, color=0x9B59B6)
+    embed = JanoEmbed(title=title, description=description, color=0x9B59B6)
     cat = guild.get_channel(data.category_id)
     embed.add_field(name="📦 Category / Channel", value=f"**{cat.name}**" if cat else "❌ Not set", inline=False)
     txt = guild.get_channel(data.text_channel_id) if data.text_channel_id else None
@@ -2002,7 +2016,7 @@ class WizardStep2Channels(BotView):
             return await interaction.response.defer()
         label  = "📦 Select category" if self.type_sel == "category" else "💬 Select channel"
         picker = WizardCategoryPicker(self, options)
-        await interaction.response.send_message(embed=discord.Embed(title=label, color=0x3498DB), view=picker, ephemeral=True)
+        await interaction.response.send_message(embed=JanoEmbed(title=label, color=0x3498DB), view=picker, ephemeral=True)
         picker.message = await interaction.original_response()
 
     async def _next_callback(self, interaction: discord.Interaction):
@@ -2016,7 +2030,7 @@ class WizardStep2Channels(BotView):
                 await self.summary.message.edit(embed=embed_summary, view=self.summary)
             except Exception:
                 pass
-            embed_closed = discord.Embed(title="✅ Channels updated", description="Changes saved above.\n\nPress **💾 Save changes** to apply.", color=0x2ECC71)
+            embed_closed = JanoEmbed(title="✅ Channels updated", description="Changes saved above.\n\nPress **💾 Save changes** to apply.", color=0x2ECC71)
             await interaction.response.edit_message(embed=embed_closed, view=None)
             msg = await interaction.original_response()
             asyncio.ensure_future(_delete_after(msg, delay=10))
@@ -2032,7 +2046,7 @@ class WizardStep2Channels(BotView):
             embed = _wizard_embed(3, self.data.name, "Select the roles.\n\nBoth optional. Empty Visibility role = @everyone.")
             embed.add_field(name="👁️ Visibility role", value="*Role that gains/loses access*\n*(empty = @everyone)*", inline=False)
             embed.add_field(name="📣 Mention role",    value="*Role pinged when channels open on schedule (optional)*", inline=False)
-        embed_closed = discord.Embed(description="✅ Channels saved — continuing to roles...", color=0x2ECC71)
+        embed_closed = JanoEmbed(description="✅ Channels saved — continuing to roles...", color=0x2ECC71)
         await interaction.response.edit_message(embed=embed_closed, view=None)
         msg_cerrado = await interaction.original_response()
         asyncio.ensure_future(_delete_after(msg_cerrado, delay=3))
@@ -2135,14 +2149,14 @@ class WizardStep3Roles(BotView):
                 await self.summary.message.edit(embed=embed_summary, view=self.summary)
             except Exception:
                 pass
-            embed_closed = discord.Embed(title="✅ Roles updated", description="Changes saved above.\n\nPress **💾 Save changes** to apply.", color=0x2ECC71)
+            embed_closed = JanoEmbed(title="✅ Roles updated", description="Changes saved above.\n\nPress **💾 Save changes** to apply.", color=0x2ECC71)
             await interaction.response.edit_message(embed=embed_closed, view=None)
             msg = await interaction.original_response()
             asyncio.ensure_future(_delete_after(msg, delay=10))
             return
         if self.message:
             try:
-                await self.message.edit(embed=discord.Embed(description="✅ Roles updated.", color=0x2ECC71), view=None)
+                await self.message.edit(embed=JanoEmbed(description="✅ Roles updated.", color=0x2ECC71), view=None)
                 asyncio.ensure_future(_delete_after(self.message))
             except Exception:
                 pass
@@ -2214,7 +2228,7 @@ class WizardStep4Schedule(discord.ui.Modal):
             modal_kwargs={"data": self.data, "plugin": self.plugin, "summary": self.summary},
             error=error
         )
-        embed = discord.Embed(
+        embed = JanoEmbed(
             title="⚠️ Invalid input — Schedule & Limit",
             description=f"**{error}**\n\nPress the button below to go back and correct it.",
             color=0xE74C3C
@@ -2281,7 +2295,7 @@ class WizardStep4Schedule(discord.ui.Modal):
             except Exception:
                 pass
             await interaction.response.send_message(
-                embed=discord.Embed(
+                embed=JanoEmbed(
                     title="✅ Schedule updated",
                     description="Review the summary and press the **green button** to confirm.",
                     color=0x2ECC71
@@ -2333,7 +2347,7 @@ class WizardEditStep4Schedule(discord.ui.Modal):
             modal_kwargs={"data": self.data, "plugin": self.plugin},
             error=error
         )
-        embed = discord.Embed(
+        embed = JanoEmbed(
             title="⚠️ Invalid input — Schedule & Limit",
             description=f"**{error}**\n\nPress the button below to go back and correct it.",
             color=0xE74C3C
@@ -2466,11 +2480,11 @@ class WizardStep5Summary(BotView):
             asyncio.ensure_future(self.plugin._evaluate_instance(st))
             if self.message:
                 try:
-                    await self.message.edit(embed=discord.Embed(title=f"✅ Instance '{d.name}' updated!", color=0x2ECC71), view=None)
+                    await self.message.edit(embed=JanoEmbed(title=f"✅ Instance '{d.name}' updated!", color=0x2ECC71), view=None)
                     asyncio.ensure_future(_delete_after(self.message))
                 except Exception:
                     pass
-            await interaction.response.send_message(embed=discord.Embed(
+            await interaction.response.send_message(embed=JanoEmbed(
                 title=f"✅ Changes saved — {d.name}", description="All changes applied immediately.", color=0x2ECC71
             ), ephemeral=True, delete_after=120)
             log.info(f"[Jano] Instance '{d.name}' edited by {interaction.user}")
@@ -2491,14 +2505,14 @@ class WizardStep5Summary(BotView):
             await self.plugin._create_instance(cfg)
             if self.message:
                 try:
-                    await self.message.edit(embed=discord.Embed(
+                    await self.message.edit(embed=JanoEmbed(
                         title=f"✅ Instance '{d.name}' created!",
                         description="You can now use all bot commands with this instance.", color=0x2ECC71
                     ), view=None)
                     asyncio.ensure_future(_delete_after(self.message))
                 except Exception:
                     pass
-            await interaction.response.send_message(embed=discord.Embed(
+            await interaction.response.send_message(embed=JanoEmbed(
                 title=f"✅ Instance created — {d.name}",
                 description=f"The instance **{d.name}** is ready.\n\nUse `/jano setup` to modify its configuration.", color=0x2ECC71
             ), ephemeral=True, delete_after=120)
@@ -2515,7 +2529,7 @@ class WizardStep5Summary(BotView):
         self.stop()
         if self.message:
             try:
-                await self.message.edit(embed=discord.Embed(description="❌ Cancelled. No changes were made.", color=0x95A5A6), view=None)
+                await self.message.edit(embed=JanoEmbed(description="❌ Cancelled. No changes were made.", color=0x95A5A6), view=None)
                 asyncio.ensure_future(_delete_after(self.message, delay=10))
             except Exception:
                 pass
@@ -2562,7 +2576,7 @@ class WizardEditName(discord.ui.Modal, title="Name & Status Icon"):
         # Remind user to save — send a followup that auto-deletes
         try:
             msg = await interaction.followup.send(
-                embed=discord.Embed(
+                embed=JanoEmbed(
                     description="✏️ Name / Icon updated in the summary above.\n\n⚠️ Review the summary and press the **green button** to confirm.",
                     color=0x3498DB
                 ),
@@ -2603,10 +2617,10 @@ class WizardEditStep5Summary(BotView):
         await st.save()
         if self.message:
             try:
-                await self.message.edit(embed=discord.Embed(title=f"✅ Instance '{d.name}' updated!", color=0x2ECC71), view=None)
+                await self.message.edit(embed=JanoEmbed(title=f"✅ Instance '{d.name}' updated!", color=0x2ECC71), view=None)
             except Exception:
                 pass
-        await interaction.response.send_message(embed=discord.Embed(
+        await interaction.response.send_message(embed=JanoEmbed(
             title=f"✅ Changes saved — {d.name}", description="All changes applied. The bot uses the new config immediately.", color=0x2ECC71
         ), ephemeral=True, delete_after=120)
         log.info(f"[Jano] ✏️ Instance '{d.name}' edited by {interaction.user}")
@@ -2621,7 +2635,7 @@ class WizardEditStep5Summary(BotView):
     async def _cancelar(self, interaction: discord.Interaction):
         self.stop()
         if self.message:
-            await self._close_message(discord.Embed(description="❌ Edit cancelled. No changes made.", color=0x95A5A6))
+            await self._close_message(JanoEmbed(description="❌ Edit cancelled. No changes made.", color=0x95A5A6))
         asyncio.ensure_future(_reply_ephemeral(interaction, content="Edit cancelled."))
 
 
@@ -2691,7 +2705,7 @@ class ViewAccessRoles(BotView):
                 names = ", ".join(self.guild.get_role(r).name for r in selection if self.guild.get_role(r))
                 lines.append(f"**{name}** → {names}")
 
-        embed = discord.Embed(
+        embed = JanoEmbed(
             title="🔑 Review — Instance command roles",
             description="Review your selection and press **Save instance roles** to apply.",
             color=0x9B59B6
@@ -2700,7 +2714,7 @@ class ViewAccessRoles(BotView):
         view_save = ViewSaveAccessRoles(self)
         if self.message:
             try:
-                await self.message.edit(embed=discord.Embed(
+                await self.message.edit(embed=JanoEmbed(
                     title="🔑 Configure command roles per instance",
                     description="✅ Selection applied — review below and confirm.", color=0x9B59B6
                 ), view=None)
@@ -2731,7 +2745,7 @@ class ViewAccessRoles(BotView):
                     role_names = ", ".join(self.guild.get_role(r).name for r in valid_roles if self.guild.get_role(r))
                     changes.append(f"**{name}** → {role_names}")
         self.stop()
-        embed = discord.Embed(title="🔑 Command roles updated", color=0x2ECC71)
+        embed = JanoEmbed(title="🔑 Command roles updated", color=0x2ECC71)
         if changes:
             embed.add_field(name="Changes applied", value="\n".join(changes), inline=False)
         else:
@@ -2753,7 +2767,7 @@ class ViewSaveAccessRoles(BotView):
     async def _save_callback(self, interaction: discord.Interaction):
         self.stop()
         try:
-            await interaction.response.edit_message(embed=discord.Embed(
+            await interaction.response.edit_message(embed=JanoEmbed(
                 title="🔑 Configure command roles per instance",
                 description="✅ Saved — command roles updated successfully.", color=0x2ECC71
             ), view=None)
