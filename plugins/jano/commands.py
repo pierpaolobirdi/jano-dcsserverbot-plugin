@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
-COMMANDS_VERSION = "4.0.4"
+COMMANDS_VERSION = "4.0.5"
 
 _MAX_INSTANCES = 4
 
@@ -486,7 +486,11 @@ class Jano(Plugin):
         return None
 
     def _is_authorized(self, interaction: discord.Interaction, st: InstanceState | None = None) -> bool:
-        allowed = set(self.command_role_ids_global) | set((st.cfg.command_role_ids_instance if st else None) or [])
+        """Who may use the commands. Instance roles: None = only the global roles, [] = @everyone, ids = global + those roles."""
+        instance_roles = st.cfg.command_role_ids_instance if st else None
+        if instance_roles == []:
+            return True   # the instance was set to @everyone
+        allowed = set(self.command_role_ids_global) | set(instance_roles or [])
         if not allowed:
             return True   # no command roles configured anywhere: everyone may use the commands
         return any(r.id in allowed for r in getattr(interaction.user, "roles", []))
@@ -592,7 +596,7 @@ class Jano(Plugin):
                     opening_time              = r["opening_time"],
                     closing_time              = r["closing_time"],
                     max_manual_hours          = r["max_manual_hours"],
-                    command_role_ids_instance = list(r["command_role_ids_instance"] or []) or None,
+                    command_role_ids_instance = None if r["command_role_ids_instance"] is None else list(r["command_role_ids_instance"]),
                     status_icon               = r["status_icon"],
                     tz                        = self.tz,
                 )
@@ -1117,6 +1121,14 @@ def _role_names(guild: discord.Guild, role_ids) -> list[str]:
     """Names of the roles that still exist in the guild."""
     return [r.name for r in (guild.get_role(rid) for rid in role_ids) if r]
 
+def _command_roles_label(guild: discord.Guild, role_ids: list | None, none_text: str) -> str:
+    """Readable form of an instance's command roles (None = only global roles, [] = @everyone)."""
+    if role_ids is None:
+        return none_text
+    if not role_ids:
+        return "🌐 @everyone"
+    return ", ".join(_role_names(guild, role_ids)) or none_text
+
 async def _delete_message(channel, message_id: int) -> bool:
     """Delete a channel message by ID; False when it no longer exists or cannot be deleted."""
     try:
@@ -1323,7 +1335,7 @@ class ViewSetup(BotView):
         for name in self.plugin._get_names():
             st_inst = self.plugin.states[name]
             ri      = st_inst.cfg.command_role_ids_instance
-            val     = ", ".join(_role_names(self.guild, ri or [])) or "❌ Not configured"
+            val     = _command_roles_label(self.guild, ri, "❌ Not configured")
             embed.add_field(name=f"Current — {name}", value=val, inline=False)
         await interaction.response.send_message(embed=embed, view=view_roles, ephemeral=True)
         view_roles.message = await interaction.original_response()
@@ -2097,7 +2109,7 @@ class ViewAccessRoles(BotView):
         for name, selection in self.selections.items():
             if selection is None:
                 current = self.plugin.states[name].cfg.command_role_ids_instance
-                lines.append(f"**{name}** → *(no change)* {', '.join(_role_names(self.guild, current or [])) or '❌ None / 🌐 @everyone'}")
+                lines.append(f"**{name}** → *(no change)* {_command_roles_label(self.guild, current, '❌ None')}")
             else:
                 lines.append(f"**{name}** → {self._selection_label(selection)}")
 
