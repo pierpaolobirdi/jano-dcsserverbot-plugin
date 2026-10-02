@@ -34,6 +34,8 @@ _DEFAULT_TZ = "Europe/Madrid"
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
 COMMANDS_VERSION = "4.0.1"
 
+_MAX_INSTANCES = 4
+
 _DAY_NAMES    = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
 _TIME_PATTERN = re.compile(r"^\d{1,2}:\d{2}$")
 
@@ -303,7 +305,8 @@ class InstanceState:
         st.current_state       = state_row["current_state"]
         st.category_name_cache = state_row["category_name_cache"]
         st.last_message_id     = state_row["last_message_id"]
-        st.manual_hours_active = state_row["manual_hours_active"] or cfg.max_manual_hours
+        hours_active           = state_row["manual_hours_active"]
+        st.manual_hours_active = hours_active if hours_active is not None else cfg.max_manual_hours
         st.max_hours_override  = state_row["max_hours_override"]
         raw_schedule           = state_row["schedule_override"]
         st.schedule_override   = json.loads(raw_schedule) if isinstance(raw_schedule, str) else raw_schedule
@@ -771,8 +774,9 @@ class Jano(Plugin):
                     break
                 except discord.HTTPException as e:
                     if e.status == 429:
-                        self.log.warning(f"[{st.cfg.name}] Rate limit on permissions")
-                        break
+                        # Do not mark the state as applied — the next scheduler tick retries.
+                        self.log.warning(f"[{st.cfg.name}] Rate limit on permissions, will retry next cycle")
+                        return
                     else:
                         self.log.warning(f"[{st.cfg.name}] Permission error (attempt {attempt+1}/3): {e}")
                         if attempt < 2:
@@ -1219,11 +1223,7 @@ async def _delete_after(message: discord.Message, delay: int = 120):
 
 async def _followup_send(interaction: discord.Interaction, embed: discord.Embed, delay: int = 120):
     msg = await interaction.followup.send(embed=embed, ephemeral=True)
-    await asyncio.sleep(delay)
-    try:
-        await msg.delete()
-    except Exception:
-        pass
+    _spawn(_delete_after(msg, delay))
 
 _background_tasks: set = set()
 
@@ -1434,9 +1434,9 @@ class ViewSetup(BotView):
         if not self.plugin._is_authorized(interaction):
             _ephemeral(interaction, embed=_no_permission("❌ Only admin roles can create instances."))
             return
-        if len(self.plugin.states) >= 4:
+        if len(self.plugin.states) >= _MAX_INSTANCES:
             await interaction.response.send_message(
-                "❌ Maximum of 4 instances reached. Delete one first.", ephemeral=True, delete_after=120
+                f"❌ Maximum of {_MAX_INSTANCES} instances reached. Delete one first.", ephemeral=True, delete_after=120
             )
             return
         await interaction.response.send_modal(WizardStep1Name(self.plugin))
@@ -1646,6 +1646,11 @@ class WizardStep1Name(discord.ui.Modal, title="Instance name & Status Icon"):
 
     async def on_submit(self, interaction: discord.Interaction):
         name = self._f_name.value.strip()
+        if len(self.plugin.states) >= _MAX_INSTANCES:
+            await interaction.response.send_message(
+                f"❌ Maximum of {_MAX_INSTANCES} instances reached. Delete one first.", ephemeral=True, delete_after=120
+            )
+            return
         if name in self.plugin.states:
             await interaction.response.send_message(f"❌ An instance named **{name}** already exists.", ephemeral=True, delete_after=120)
             return
@@ -2059,16 +2064,24 @@ class WizardStep5Summary(BotView):
             st       = d.st
             cfg      = st.cfg
             old_name = cfg.name
-            cfg.name, cfg.category_id, cfg.role_id  = d.name, d.category_id, d.role_id
-            cfg.text_channel_id, cfg.voice_channel_id  = d.text_channel_id, d.voice_channel_id
-            cfg.mention_role_id, cfg.active_days      = d.mention_role_id, d.active_days
-            cfg.opening_time, cfg.closing_time         = d.opening_time, d.closing_time
-            cfg.max_manual_hours = d.max_manual_hours
-            cfg.status_icon      = d.status_icon
+            # Rename in the DB first (and wait for it): saving under the new name before the
+            # rename would insert a duplicate row instead of updating the existing one.
             if d.name != old_name and old_name in self.plugin.states:
+                if not await self._rename_in_db(old_name, d.name):
+                    await interaction.response.send_message(
+                        "❌ Could not rename the instance in the database. No changes were made.",
+                        ephemeral=True, delete_after=120
+                    )
+                    return
                 self.plugin.states[d.name] = self.plugin.states.pop(old_name)
-                # Rename in DB
-                _spawn(self._rename_in_db(old_name, d.name))
+            if d.category_id != cfg.category_id:
+                st.category_name_cache = None
+            cfg.name, cfg.category_id, cfg.role_id = d.name, d.category_id, d.role_id
+            cfg.text_channel_id, cfg.voice_channel_id = d.text_channel_id, d.voice_channel_id
+            cfg.mention_role_id, cfg.active_days = d.mention_role_id, d.active_days
+            cfg.opening_time, cfg.closing_time = d.opening_time, d.closing_time
+            cfg.max_manual_hours = d.max_manual_hours
+            cfg.status_icon = d.status_icon
             await st.save()
             # Apply category rename immediately so the change is visible at once
             _spawn(self.plugin._evaluate_instance(st))
@@ -2083,6 +2096,12 @@ class WizardStep5Summary(BotView):
             ), ephemeral=True, delete_after=120)
             log.info(f"[Jano] Instance '{d.name}' edited by {interaction.user}")
         else:
+            if len(self.plugin.states) >= _MAX_INSTANCES or d.name in self.plugin.states:
+                await interaction.response.send_message(
+                    f"❌ Cannot create '{d.name}': the instance limit ({_MAX_INSTANCES}) was reached or the name is already taken.",
+                    ephemeral=True, delete_after=120
+                )
+                return
             cfg = InstanceConfig(
                 name=d.name, server_id=self.plugin._server_id,
                 category_id=d.category_id, role_id=d.role_id,
@@ -2111,12 +2130,14 @@ class WizardStep5Summary(BotView):
             ), ephemeral=True, delete_after=120)
             log.info(f"[Jano] Instance '{d.name}' created by {interaction.user}")
 
-    async def _rename_in_db(self, old: str, new: str):
+    async def _rename_in_db(self, old: str, new: str) -> bool:
         try:
             async with self.plugin.apool.connection() as conn:
                 await conn.execute("UPDATE jano_instances SET name = %s WHERE name = %s", (new, old))
+            return True
         except Exception as e:
             log.error(f"[Jano] Error renaming instance in DB: {e}")
+            return False
 
     async def _cancel(self, interaction: discord.Interaction):
         self.stop()
