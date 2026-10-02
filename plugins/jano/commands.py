@@ -831,11 +831,11 @@ class Jano(Plugin):
         finally:
             st._evaluating = False
 
-    async def _release_category(self, category_id: int, role_id: int, instance_name: str):
-        """Undo what Jano did to a category it no longer manages.
+    async def _release_category(self, category_id: int, instance_name: str):
+        """Clean up a category Jano no longer manages: remove the 🟢/🔴 markers from its name.
 
-        Removes the 🟢/🔴 markers from its name and drops the view_channel override Jano set
-        for the managed role.  Skipped if another instance still manages the same category.
+        Permissions are intentionally left untouched.  Skipped if another instance still
+        manages the same category.
         """
         if any(other.cfg.category_id == category_id for other in self.states.values()):
             return
@@ -847,12 +847,6 @@ class Jano(Plugin):
             clean_name = re.sub(r"[🟢🔴]\s*", "", category.name).strip()
             if clean_name != category.name:
                 await category.edit(name=clean_name)
-            role = guild.get_role(role_id)
-            if role:
-                overwrite = category.overwrites_for(role)
-                if overwrite.view_channel is not None:
-                    overwrite.view_channel = None
-                    await category.set_permissions(role, overwrite=overwrite)
             self.log.info(f"[{instance_name}] 🧹 Previous category '{clean_name}' released")
         except discord.HTTPException as e:
             self.log.warning(f"[{instance_name}] Could not clean previous category: {e}")
@@ -2101,7 +2095,6 @@ class WizardStep5Summary(BotView):
                     return
                 self.plugin.states[d.name] = self.plugin.states.pop(old_name)
             old_category_id = cfg.category_id
-            old_role_id     = cfg.effective_role_id()
             if d.category_id != old_category_id:
                 st.category_name_cache = None
             cfg.name, cfg.category_id, cfg.role_id = d.name, d.category_id, d.role_id
@@ -2112,7 +2105,7 @@ class WizardStep5Summary(BotView):
             cfg.status_icon = d.status_icon
             await st.save()
             if d.category_id != old_category_id:
-                await self.plugin._release_category(old_category_id, old_role_id, d.name)
+                await self.plugin._release_category(old_category_id, d.name)
             # Apply category rename immediately so the change is visible at once
             _spawn(self.plugin._evaluate_instance(st))
             if self.message:
