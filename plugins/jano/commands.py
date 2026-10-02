@@ -37,7 +37,8 @@ _DEFAULT_TZ = "Europe/Madrid"
 COMMANDS_VERSION = "4.0.1"
 
 _FOOTER_SEPARATOR = "▬" * 36
-EMBED_FOOTER = f"{_FOOTER_SEPARATOR}\nJano v.{COMMANDS_VERSION}"
+# Leading zero-width space keeps an empty line above the separator (Discord trims plain leading newlines).
+EMBED_FOOTER = f"\u200b\n{_FOOTER_SEPARATOR}\nJano v.{COMMANDS_VERSION}"
 
 
 class JanoEmbed(discord.Embed):
