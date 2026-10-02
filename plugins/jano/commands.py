@@ -1,17 +1,16 @@
 """
 Jano Plugin for DCSServerBot
 Manages Discord channel visibility on a configurable schedule or manually.
-
-Ported from jano_bot_v103.py (standalone) to DCSServerBot Plugin architecture.
 """
 
 from __future__ import annotations
 
 import asyncio
 import datetime
-import json
 import logging
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Type
 
 import discord
@@ -38,6 +37,7 @@ _MAX_INSTANCES = 4
 
 _DAY_NAMES    = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
 _TIME_PATTERN = re.compile(r"^\d{1,2}:\d{2}$")
+_STATUS_ICONS = re.compile(r"[🟢🔴]\s*")
 
 _FOOTER_SEPARATOR = "▬" * 36
 # Leading zero-width space keeps an empty line above the separator (Discord trims plain leading newlines).
@@ -53,34 +53,27 @@ class JanoEmbed(discord.Embed):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DATA MODEL — InstanceConfig + InstanceState
-# (same logic as standalone, persistence replaced by PostgreSQL)
+# DATA MODEL — InstanceConfig + InstanceState (persisted in PostgreSQL)
 # ══════════════════════════════════════════════════════════════════════════════
 
+@dataclass
 class InstanceConfig:
-    """Immutable configuration for one Jano instance (category group)."""
+    """Configuration for one Jano instance (category group)."""
 
-    def __init__(self, name, server_id, category_id, role_id,
-                 text_channel_id, voice_channel_id, mention_role_id,
-                 active_days, opening_time, closing_time,
-                 max_manual_hours, command_role_ids_global,
-                 command_role_ids_instance, status_icon: bool = True,
-                 tz: "ZoneInfo | None" = None):
-        self.name                      = name
-        self.server_id                 = server_id
-        self.category_id               = category_id
-        self.role_id                   = role_id          # None → @everyone
-        self.text_channel_id           = text_channel_id
-        self.voice_channel_id          = voice_channel_id
-        self.mention_role_id           = mention_role_id
-        self.active_days               = active_days
-        self.opening_time              = opening_time
-        self.closing_time              = closing_time
-        self.max_manual_hours          = max_manual_hours
-        self.command_role_ids_global   = command_role_ids_global
-        self.command_role_ids_instance = command_role_ids_instance
-        self.status_icon               = status_icon  # True = rename category with 🟢🔴
-        self.tz                        = tz or ZoneInfo(_DEFAULT_TZ)
+    name:                      str
+    server_id:                 int
+    category_id:               int
+    role_id:                   int | None            # None → @everyone
+    text_channel_id:           int | None
+    voice_channel_id:          int | None
+    mention_role_id:           int | None
+    active_days:               list
+    opening_time:              str
+    closing_time:              str
+    max_manual_hours:          float
+    command_role_ids_instance: list | None
+    status_icon:               bool = True           # True = rename category with 🟢🔴
+    tz:                        ZoneInfo = field(default_factory=lambda: ZoneInfo(_DEFAULT_TZ))
 
     def effective_role_id(self):
         """Return the role ID to use for permission overwrites.
@@ -104,39 +97,20 @@ class InstanceState:
         self.manual_override     = None
         self.override_ts         = None
         self.manual_hours_active = cfg.max_manual_hours
-        self.max_hours_override  = None
-        self.schedule_override   = None
         self._trimmed_duration   = None
         self._evaluating         = False
 
-    # ── Derived getters ────────────────────────────────────────────────────
-
-    def get_category_id(self):      return self.cfg.category_id
-    def get_role_id(self):          return self.cfg.effective_role_id()
-    def get_text_channel_id(self):  return self.cfg.text_channel_id
-    def get_voice_channel_id(self): return self.cfg.voice_channel_id
-    def get_mention_role_id(self):  return self.cfg.mention_role_id
-
     def active_ceiling(self):
-        return self.max_hours_override if self.max_hours_override is not None else self.cfg.max_manual_hours
-
-    def active_schedule(self):
-        if self.schedule_override:
-            return (
-                self.schedule_override.get("days", []),
-                self.schedule_override.get("opening", self.cfg.opening_time),
-                self.schedule_override.get("closing",   self.cfg.closing_time),
-            )
-        return self.cfg.active_days, self.cfg.opening_time, self.cfg.closing_time
+        return self.cfg.max_manual_hours
 
     def schedule_readable(self):
-        days, open_t, close_t = self.active_schedule()
-        if not days:
+        cfg = self.cfg
+        if not cfg.active_days:
             return {"days": "No schedule (manual)", "opening": "—", "closing": "—"}
         return {
-            "days":    ", ".join(_DAY_NAMES[d] for d in days if d in _DAY_NAMES),
-            "opening": open_t,
-            "closing":   close_t,
+            "days":    ", ".join(_DAY_NAMES[d] for d in cfg.active_days if d in _DAY_NAMES),
+            "opening": cfg.opening_time,
+            "closing": cfg.closing_time,
         }
 
     # ── Manual mode ────────────────────────────────────────────────────────
@@ -187,7 +161,8 @@ class InstanceState:
             return None, "EXPIRED"
         if self.manual_override is not None:
             return self.manual_override, "MANUAL"
-        days, open_t, close_t = self.active_schedule()
+        cfg = self.cfg
+        days, open_t, close_t = cfg.active_days, cfg.opening_time, cfg.closing_time
         if not days:
             return False, "NO_SCHEDULE"
         now          = datetime.datetime.now(self.cfg.tz)
@@ -213,78 +188,73 @@ class InstanceState:
     # ── Persistence ────────────────────────────────────────────────────────
 
     async def save(self):
-        """Persist instance config + state to PostgreSQL.
+        """Persist instance config + state (two upserts in one transaction).
 
         Always awaited so callers get explicit confirmation (or an exception)
         instead of silently losing writes on pool errors or shutdown races.
         """
+        await self._save(include_config=True)
+
+    async def save_state(self):
+        """Persist only the runtime state — what the scheduler changes on its own.
+
+        Skipped when the instance has been deleted meanwhile, so a late write cannot
+        fail on the foreign key or bring a deleted instance back.
+        """
+        if self.plugin.states.get(self.cfg.name) is not self:
+            return
+        await self._save(include_config=False)
+
+    async def _save(self, include_config: bool):
+        cfg = self.cfg
         try:
             async with self.plugin.apool.connection() as conn:
                 async with conn.transaction():
-                    # Upsert config
-                    await conn.execute("""
-                        INSERT INTO jano_instances
-                            (name, category_id, role_id, text_channel_id, voice_channel_id,
-                             mention_role_id, active_days, opening_time, closing_time,
-                             max_manual_hours, command_role_ids_instance, status_icon)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        ON CONFLICT (name) DO UPDATE SET
-                            category_id               = EXCLUDED.category_id,
-                            role_id                   = EXCLUDED.role_id,
-                            text_channel_id           = EXCLUDED.text_channel_id,
-                            voice_channel_id          = EXCLUDED.voice_channel_id,
-                            mention_role_id           = EXCLUDED.mention_role_id,
-                            active_days              = EXCLUDED.active_days,
-                            opening_time             = EXCLUDED.opening_time,
-                            closing_time               = EXCLUDED.closing_time,
-                            max_manual_hours          = EXCLUDED.max_manual_hours,
-                            command_role_ids_instance = EXCLUDED.command_role_ids_instance,
-                            status_icon               = EXCLUDED.status_icon
-                    """, (
-                        self.cfg.name,
-                        self.cfg.category_id,
-                        self.cfg.role_id,
-                        self.cfg.text_channel_id,
-                        self.cfg.voice_channel_id,
-                        self.cfg.mention_role_id,
-                        self.cfg.active_days or [],
-                        self.cfg.opening_time,
-                        self.cfg.closing_time,
-                        self.cfg.max_manual_hours,
-                        self.cfg.command_role_ids_instance,
-                        self.cfg.status_icon,
-                    ))
-                    # Upsert state
-                    ts            = self.override_ts.isoformat() if self.override_ts else None
-                    schedule_json = json.dumps(self.schedule_override) if self.schedule_override else None
+                    if include_config:
+                        await conn.execute("""
+                            INSERT INTO jano_instances
+                                (name, category_id, role_id, text_channel_id, voice_channel_id,
+                                 mention_role_id, active_days, opening_time, closing_time,
+                                 max_manual_hours, command_role_ids_instance, status_icon)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            ON CONFLICT (name) DO UPDATE SET
+                                category_id               = EXCLUDED.category_id,
+                                role_id                   = EXCLUDED.role_id,
+                                text_channel_id           = EXCLUDED.text_channel_id,
+                                voice_channel_id          = EXCLUDED.voice_channel_id,
+                                mention_role_id           = EXCLUDED.mention_role_id,
+                                active_days               = EXCLUDED.active_days,
+                                opening_time              = EXCLUDED.opening_time,
+                                closing_time              = EXCLUDED.closing_time,
+                                max_manual_hours          = EXCLUDED.max_manual_hours,
+                                command_role_ids_instance = EXCLUDED.command_role_ids_instance,
+                                status_icon               = EXCLUDED.status_icon
+                        """, (
+                            cfg.name, cfg.category_id, cfg.role_id, cfg.text_channel_id,
+                            cfg.voice_channel_id, cfg.mention_role_id, cfg.active_days or [],
+                            cfg.opening_time, cfg.closing_time, cfg.max_manual_hours,
+                            cfg.command_role_ids_instance, cfg.status_icon,
+                        ))
                     await conn.execute("""
                         INSERT INTO jano_state
                             (name, current_state, category_name_cache, last_message_id,
-                             manual_override, override_ts, manual_hours_active,
-                             max_hours_override, schedule_override)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                             manual_override, override_ts, manual_hours_active)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (name) DO UPDATE SET
-                            current_state           = EXCLUDED.current_state,
-                            category_name_cache  = EXCLUDED.category_name_cache,
-                            last_message_id       = EXCLUDED.last_message_id,
-                            manual_override         = EXCLUDED.manual_override,
-                            override_ts      = EXCLUDED.override_ts,
-                            manual_hours_active     = EXCLUDED.manual_hours_active,
-                            max_hours_override      = EXCLUDED.max_hours_override,
-                            schedule_override        = EXCLUDED.schedule_override
+                            current_state       = EXCLUDED.current_state,
+                            category_name_cache = EXCLUDED.category_name_cache,
+                            last_message_id     = EXCLUDED.last_message_id,
+                            manual_override     = EXCLUDED.manual_override,
+                            override_ts         = EXCLUDED.override_ts,
+                            manual_hours_active = EXCLUDED.manual_hours_active
                     """, (
-                        self.cfg.name,
-                        self.current_state,
-                        self.category_name_cache,
-                        self.last_message_id,
+                        cfg.name, self.current_state, self.category_name_cache, self.last_message_id,
                         self.manual_override,
-                        ts,
+                        self.override_ts.isoformat() if self.override_ts else None,
                         self.manual_hours_active,
-                        self.max_hours_override,
-                        schedule_json,
                     ))
         except Exception as e:
-            log.error(f"[Jano/{self.cfg.name}] Error saving state: {e}")
+            log.error(f"[Jano/{cfg.name}] Error saving state: {e}")
             raise
 
     @classmethod
@@ -307,9 +277,9 @@ class InstanceState:
         st.last_message_id     = state_row["last_message_id"]
         hours_active           = state_row["manual_hours_active"]
         st.manual_hours_active = hours_active if hours_active is not None else cfg.max_manual_hours
-        st.max_hours_override  = state_row["max_hours_override"]
-        raw_schedule           = state_row["schedule_override"]
-        st.schedule_override   = json.loads(raw_schedule) if isinstance(raw_schedule, str) else raw_schedule
+        # max_hours_override / schedule_override are no longer used; warn if old data is being ignored.
+        if state_row["max_hours_override"] is not None or state_row["schedule_override"]:
+            log.warning(f"[Jano/{cfg.name}] Ignoring obsolete max_hours_override / schedule_override stored in DB")
 
         manual_override = state_row["manual_override"]
         override_ts     = state_row["override_ts"]
@@ -336,11 +306,8 @@ class InstanceState:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PLUGIN CLASS
+# PLUGIN — modal used by /jano comms open, then the Jano cog
 # ══════════════════════════════════════════════════════════════════════════════
-
-# ── Command groups ────────────────────────────────────────────────────────────
-# Defined at module level so they can be used as decorators inside the Jano cog
 
 class ModalCommsDuration(discord.ui.Modal, title="Open comms — set duration"):
     """Modal that asks for duration when opening comms manually."""
@@ -387,7 +354,7 @@ class ModalCommsDuration(discord.ui.Modal, title="Open comms — set duration"):
                     ephemeral=True, delete_after=120
                 )
                 return
-        await self.plugin._comms_open(interaction, self.st, str(duration) if duration else None)
+        await self.plugin._comms_open(interaction, self.st, duration or None)
 
 
 
@@ -414,6 +381,7 @@ class Jano(Plugin):
         self.tz: ZoneInfo = ZoneInfo(_DEFAULT_TZ)
         # Open-channel announcement template — set in cog_load from jano.yaml
         self._open_message_template: dict = {}
+
     # ── Plugin lifecycle ───────────────────────────────────────────────────
 
     async def cog_load(self) -> None:
@@ -442,7 +410,6 @@ class Jano(Plugin):
         if self.scheduler.is_running():
             self.scheduler.cancel()
         await super().cog_unload()
-
 
     async def on_ready(self) -> None:
         await super().on_ready()
@@ -515,52 +482,14 @@ class Jano(Plugin):
         return False
 
     async def _ensure_tables(self):
-        """Create Jano tables if they do not exist yet.
+        """Create Jano tables if they do not exist yet (runs db/tables.sql, the single schema source).
         Called early in cog_load so tables are ready before on_ready.
-        Safe to call multiple times — uses IF NOT EXISTS.
+        Safe to call multiple times — the script uses IF NOT EXISTS / ON CONFLICT DO NOTHING.
         """
         try:
+            schema = (Path(__file__).parent / "db" / "tables.sql").read_text(encoding="utf-8")
             async with self.apool.connection() as conn:
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS jano_instances (
-                        name                        TEXT PRIMARY KEY,
-                        category_id                 BIGINT NOT NULL,
-                        role_id                     BIGINT,
-                        text_channel_id             BIGINT,
-                        voice_channel_id            BIGINT,
-                        mention_role_id             BIGINT,
-                        active_days                 INTEGER[],
-                        opening_time                TEXT    NOT NULL DEFAULT '19:00',
-                        closing_time                TEXT    NOT NULL DEFAULT '22:00',
-                        max_manual_hours            FLOAT   NOT NULL DEFAULT 0.0,
-                        command_role_ids_instance   BIGINT[],
-                        status_icon                 BOOLEAN NOT NULL DEFAULT true
-                    )
-                """)
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS jano_state (
-                        name                    TEXT PRIMARY KEY REFERENCES jano_instances(name) ON DELETE CASCADE ON UPDATE CASCADE,
-                        current_state           BOOLEAN,
-                        category_name_cache     TEXT,
-                        last_message_id         BIGINT,
-                        manual_override         BOOLEAN,
-                        override_ts             TIMESTAMP WITH TIME ZONE,
-                        manual_hours_active     FLOAT   NOT NULL DEFAULT 0.0,
-                        max_hours_override      FLOAT,
-                        schedule_override       JSONB
-                    )
-                """)
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS jano_global (
-                        id                      INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-                        command_role_ids_global BIGINT[]
-                    )
-                """)
-                await conn.execute("""
-                    INSERT INTO jano_global (id, command_role_ids_global)
-                    VALUES (1, ARRAY[]::BIGINT[])
-                    ON CONFLICT DO NOTHING
-                """)
+                await conn.execute(schema)
         except Exception as e:
             self.log.error(f"Error creating tables: {e}")
 
@@ -619,15 +548,6 @@ class Jano(Plugin):
                 await conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
                 self.log.info(f"DB migration: {table}.{old} → {new}")
 
-    async def _save_global_roles(self):
-        try:
-            async with self.apool.connection() as conn:
-                await conn.execute("""
-                    UPDATE jano_global SET command_role_ids_global = %s WHERE id = 1
-                """, (self.command_role_ids_global,))
-        except Exception as e:
-            self.log.error(f"Error saving global roles: {e}")
-
     # ── DB Load ────────────────────────────────────────────────────────────
 
     async def _load_state(self):
@@ -668,9 +588,8 @@ class Jano(Plugin):
                     opening_time              = r["opening_time"],
                     closing_time              = r["closing_time"],
                     max_manual_hours          = r["max_manual_hours"],
-                    command_role_ids_global   = self.command_role_ids_global,
                     command_role_ids_instance = list(r["command_role_ids_instance"] or []) or None,
-                    status_icon               = r["status_icon"] if r["status_icon"] is not None else True,
+                    status_icon               = r["status_icon"],
                     tz                        = self.tz,
                 )
                 st                = InstanceState.restore(cfg, r, self)
@@ -702,7 +621,7 @@ class Jano(Plugin):
         if st and st.last_message_id:
             guild = self._get_guild()
             if guild:
-                txt = guild.get_channel(st.get_text_channel_id()) if st.get_text_channel_id() else None
+                txt = _channel(guild, st.cfg.text_channel_id)
                 if txt:
                     try:
                         msg = await txt.fetch_message(st.last_message_id)
@@ -727,7 +646,11 @@ class Jano(Plugin):
 
     async def _evaluate_all(self):
         for st in list(self.states.values()):
-            await self._evaluate_instance(st)
+            try:
+                await self._evaluate_instance(st)
+            except Exception:
+                # One failing instance must not stop the scheduler loop (tasks.loop dies on exceptions).
+                self.log.exception(f"[{st.cfg.name}] Error while evaluating instance")
 
     async def _evaluate_instance(self, st: InstanceState):
         if st._evaluating:
@@ -738,16 +661,16 @@ class Jano(Plugin):
             if source == "EXPIRED":
                 self.log.info(f"[{st.cfg.name}] ⏳ Manual mode expired → returning to schedule")
                 st.deactivate_manual()
-                await st.save()
+                await st.save_state()
                 is_open, source = st.compute_desired_state()
 
             guild = self._get_guild()
             if not guild:
                 return
 
-            role     = guild.get_role(st.get_role_id())
-            category = guild.get_channel(st.get_category_id())
-            text_ch  = guild.get_channel(st.get_text_channel_id()) if st.get_text_channel_id() else None
+            role     = guild.get_role(st.cfg.effective_role_id())
+            category = guild.get_channel(st.cfg.category_id)
+            text_ch  = _channel(guild, st.cfg.text_channel_id)
 
             if not role or not category:
                 self.log.warning(f"[{st.cfg.name}] Role or category not found, skipping.")
@@ -761,7 +684,7 @@ class Jano(Plugin):
             if not needs_change:
                 if st.current_state != is_open:
                     st.current_state = is_open
-                    await st.save()
+                    await st.save_state()
                 return
 
             self.log.info(f"[{st.cfg.name}] 🔄 Applying ({source}) → {'OPEN' if is_open else 'CLOSED'}")
@@ -788,7 +711,7 @@ class Jano(Plugin):
             if text_ch:
                 if is_open:
                     if not st.last_message_id and source == "SCHEDULE":
-                        voice_id  = st.get_voice_channel_id()
+                        voice_id  = st.cfg.voice_channel_id
                         inst_name = st.cfg.name
                         tpl       = self._open_message_template
                         # Build announcement embed from jano.yaml template or defaults.
@@ -809,7 +732,7 @@ class Jano(Plugin):
                         )
                         desc       = _fmt(tpl.get("body", body_default))
                         embed      = JanoEmbed(title=title, description=desc, color=0x2ECC71)
-                        mention_id = st.get_mention_role_id()
+                        mention_id = st.cfg.mention_role_id
                         content    = f"<@&{mention_id}>" if mention_id else None
                         msg        = await text_ch.send(
                             content=content,
@@ -827,7 +750,7 @@ class Jano(Plugin):
                         st.last_message_id = None
 
             st.current_state = is_open
-            await st.save()
+            await st.save_state()
         finally:
             st._evaluating = False
 
@@ -844,7 +767,7 @@ class Jano(Plugin):
         if not category:
             return
         try:
-            clean_name = re.sub(r"[🟢🔴]\s*", "", category.name).strip()
+            clean_name = _strip_status_icons(category.name)
             if clean_name != category.name:
                 await category.edit(name=clean_name)
             self.log.info(f"[{instance_name}] 🧹 Previous category '{clean_name}' released")
@@ -859,7 +782,7 @@ class Jano(Plugin):
             if st.last_message_id:
                 is_open, _ = st.compute_desired_state()
                 if not is_open:
-                    txt = guild.get_channel(st.get_text_channel_id()) if st.get_text_channel_id() else None
+                    txt = _channel(guild, st.cfg.text_channel_id)
                     if txt:
                         try:
                             msg = await txt.fetch_message(st.last_message_id)
@@ -868,7 +791,7 @@ class Jano(Plugin):
                         except Exception:
                             pass
                         st.last_message_id = None
-                        await st.save()
+                        await st.save_state()
 
     # ── Autocomplete ───────────────────────────────────────────────────────
 
@@ -891,7 +814,12 @@ class Jano(Plugin):
 
         Replies to the user and returns None when the command cannot proceed.
         """
-        if not await self._check_instances(interaction, instance):
+        if not self.states or instance == "__none__":
+            _ephemeral(interaction, embed=JanoEmbed(
+                title="⚠️ No instances configured",
+                description="No instances have been set up yet.\nUse **/jano setup** to create your first instance.",
+                color=0xE67E22
+            ))
             return None
         st = self._resolve_instance(instance)
         if not st:
@@ -904,17 +832,6 @@ class Jano(Plugin):
             _ephemeral(interaction, embed=_no_permission())
             return None
         return st
-
-    async def _check_instances(self, interaction: discord.Interaction, instance: str = None) -> bool:
-        if not self.states or instance == "__none__":
-            embed = JanoEmbed(
-                title="⚠️ No instances configured",
-                description="No instances have been set up yet.\nUse **/jano setup** to create your first instance.",
-                color=0xE67E22
-            )
-            _ephemeral(interaction, embed=embed)
-            return False
-        return True
 
     # ══════════════════════════════════════════════════════════════════════
     # SLASH COMMANDS
@@ -963,15 +880,12 @@ class Jano(Plugin):
         guild = self._get_guild()
         if guild:
             embed.add_field(name="\u200b", value="**── Configured resources ──**", inline=False)
-            cat      = guild.get_channel(st.get_category_id())
-            cat_name = cat.name if cat else "❌ Not configured"
-            embed.add_field(name="📦 __Category__",   value=f"**{cat_name}**" if cat else "❌ Not configured", inline=False)
-            txt_channel_id = st.get_text_channel_id()
-            embed.add_field(name="💬 __Text channel__",  value=f"<#{txt_channel_id}>" if txt_channel_id and guild.get_channel(txt_channel_id) else "❌ Not configured", inline=False)
-            voice_id = st.get_voice_channel_id()
-            embed.add_field(name="🔊 __Voice channel__", value=f"<#{voice_id}>" if voice_id and guild.get_channel(voice_id) else "❌ Not configured", inline=False)
+            cat = guild.get_channel(st.cfg.category_id)
+            embed.add_field(name="📦 __Category__", value=f"**{cat.name}**" if cat else "❌ Not configured", inline=False)
+            for label, channel_id in (("💬 __Text channel__", st.cfg.text_channel_id), ("🔊 __Voice channel__", st.cfg.voice_channel_id)):
+                embed.add_field(name=label, value=f"<#{channel_id}>" if _channel(guild, channel_id) else "❌ Not configured", inline=False)
 
-            role_id = st.get_role_id()
+            role_id = st.cfg.effective_role_id()
             if role_id == self._server_id:
                 role_txt = "🌐 **@everyone**"
             elif role_id:
@@ -981,7 +895,7 @@ class Jano(Plugin):
                 role_txt = "❌ Not configured"
             embed.add_field(name="👁️ __Visibility role__", value=role_txt, inline=False)
 
-            mr_id  = st.get_mention_role_id()
+            mr_id  = st.cfg.mention_role_id
             mr_txt = f"<@&{mr_id}>" if mr_id else "❌ Not configured"
             embed.add_field(name="📣 __Mention role__", value=mr_txt, inline=False)
 
@@ -1039,21 +953,7 @@ class Jano(Plugin):
         ]
         return [a for a in actions if current.lower() in a.name.lower()]
 
-
-    async def _comms_open(self, interaction: discord.Interaction, st: InstanceState, duration: str = None):
-        duration_val: float | None = None
-        if duration is not None:
-            try:
-                duration_val = float(duration.strip().replace(",", "."))
-                if duration_val < 0:
-                    raise ValueError
-            except ValueError:
-                await interaction.response.send_message(
-                    "❌ Invalid duration. Enter a positive number in hours (e.g. 2.5) or 0 for no limit.",
-                    ephemeral=True, delete_after=120
-                )
-                return
-
+    async def _comms_open(self, interaction: discord.Interaction, st: InstanceState, duration_val: float | None = None):
         if st.current_state and st.manual_override is True:
             if duration_val is None:
                 embed = JanoEmbed(
@@ -1065,7 +965,7 @@ class Jano(Plugin):
                 return
             else:
                 st.activate_manual(True, hours=duration_val)
-                await st.save()
+                await st.save_state()
                 embed = JanoEmbed(
                     title=f"⏱️ Duration updated — {st.cfg.name}",
                     description="Channels remain open. Duration updated.",
@@ -1076,7 +976,7 @@ class Jano(Plugin):
                 return
 
         st.activate_manual(True, hours=duration_val)
-        await st.save()
+        await st.save_state()
         info = st.manual_mode_info()
 
         embed = JanoEmbed(
@@ -1118,7 +1018,7 @@ class Jano(Plugin):
             return
 
         st.activate_manual(False)
-        await st.save()
+        await st.save_state()
         await self._evaluate_instance(st)
 
         info  = st.manual_mode_info()
@@ -1145,14 +1045,8 @@ class Jano(Plugin):
 
     async def _execute_resume(self, st: InstanceState, title: str) -> discord.Embed:
         st.deactivate_manual()
-        await st.save()
-        h              = st.schedule_readable()
-        config_warning = False
-        if h["days"] == "No schedule (manual)":
-            st.schedule_override = None
-            await st.save()
-            h              = st.schedule_readable()
-            config_warning = True
+        await st.save_state()
+        h = st.schedule_readable()
         await self._evaluate_instance(st)
         is_open, _ = st.compute_desired_state()
         state_txt = "🟢 Open" if is_open else "🔴 Closed"
@@ -1161,8 +1055,8 @@ class Jano(Plugin):
             description="Control returns to the configured automatic schedule.",
             color=0x3498DB
         )
-        if config_warning:
-            embed.add_field(name="⚠️ No schedule defined", value="Default config values restored.", inline=False)
+        if not st.cfg.active_days:
+            embed.add_field(name="⚠️ No schedule defined", value="The instance has no active days, so channels stay closed until opened manually.", inline=False)
         embed.add_field(name="Active schedule", value=f"{h['opening']} - {h['closing']}", inline=False)
         embed.add_field(name="Active days",     value=h["days"],                          inline=False)
         embed.add_field(name="Current status",  value=state_txt,                         inline=False)
@@ -1177,8 +1071,7 @@ class Jano(Plugin):
             _ephemeral(interaction, embed=_no_permission())
             return
 
-        guild     = self._get_guild()
-        is_global = True
+        guild = self._get_guild()
 
         if not self.states:
             view  = ViewSetupEmpty(guild, self)
@@ -1195,7 +1088,7 @@ class Jano(Plugin):
         if not st:
             return
 
-        view  = ViewSetup(st, is_global, guild, self)
+        view  = ViewSetup(st, guild, self)
         embed = JanoEmbed(
             title=f"⚙️ Setup — {st.cfg.name}",
             description="What would you like to configure?",
@@ -1213,6 +1106,14 @@ class Jano(Plugin):
 # ══════════════════════════════════════════════════════════════════════════════
 # SHARED UTILITIES
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _strip_status_icons(name: str) -> str:
+    """Category name without the 🟢/🔴 markers Jano adds."""
+    return _STATUS_ICONS.sub("", name).strip()
+
+def _channel(guild: discord.Guild, channel_id: int | None):
+    """Guild channel for an optional ID (None when unset or missing)."""
+    return guild.get_channel(channel_id) if channel_id else None
 
 def _fmt_duration(td: datetime.timedelta) -> str:
     total_min = int(td.total_seconds() // 60)
@@ -1256,16 +1157,14 @@ def _spawn(coro) -> asyncio.Task:
 
 def _ephemeral(interaction: discord.Interaction, delay: int = 120, **kwargs) -> asyncio.Task:
     """Send an ephemeral reply in the background and delete it after `delay` seconds."""
-    return _spawn(_reply_ephemeral(interaction, delay, **kwargs))
-
-async def _reply_ephemeral(interaction: discord.Interaction, delay: int = 120, **kwargs):
-    await interaction.response.send_message(ephemeral=True, **kwargs)
-    try:
-        msg = await interaction.original_response()
-        await asyncio.sleep(delay)
-        await msg.delete()
-    except Exception:
-        pass
+    async def _run():
+        await interaction.response.send_message(ephemeral=True, **kwargs)
+        try:
+            msg = await interaction.original_response()
+        except Exception:
+            return
+        await _delete_after(msg, delay)
+    return _spawn(_run())
 
 def _channels_of(guild: discord.Guild, *types) -> list:
     """Guild channels of the given types, ordered by position."""
@@ -1289,29 +1188,22 @@ def _selected(view: discord.ui.View, custom_id: str):
 
 
 async def _update_category_name(category, is_open: bool, st: InstanceState):
-    """Rename category with 🟢🔴 if status_icon is enabled, or clean up emojis if just disabled."""
-    if not st.cfg.status_icon:
-        # Status icon OFF — ensure no leftover emojis on the category name
-        clean_name = re.sub(r"[🟢🔴]\s*", "", category.name).strip()
-        if category.name != clean_name:
-            try:
-                await category.edit(name=clean_name)
-                log.info(f"[Jano/{st.cfg.name}] 🧹 Emojis removed from category name")
-            except discord.HTTPException as e:
-                if e.status != 429:
-                    log.error(f"[Jano/{st.cfg.name}] Error cleaning category name: {e}")
-        return
-    # Status icon ON — rename with 🟢🔴
-    clean_name = re.sub(r"[🟢🔴]\s*", "", category.name).strip()
-    if clean_name != st.category_name_cache:
-        st.category_name_cache = clean_name
-        await st.save()
-    emoji       = "🟢" if is_open else "🔴"
-    target_name = f"{emoji} {clean_name} {emoji}"
+    """Keep the category name in sync: 🟢/🔴 markers when status_icon is on, none when it is off."""
+    clean_name = _strip_status_icons(category.name)
+    if st.cfg.status_icon:
+        if clean_name != st.category_name_cache:
+            st.category_name_cache = clean_name
+            await st.save_state()
+        emoji       = "🟢" if is_open else "🔴"
+        target_name = f"{emoji} {clean_name} {emoji}"
+    else:
+        target_name = clean_name   # leave no leftover emojis on the name
     if category.name == target_name:
         return
     try:
         await category.edit(name=target_name)
+        if not st.cfg.status_icon:
+            log.info(f"[Jano/{st.cfg.name}] 🧹 Emojis removed from category name")
     except discord.HTTPException as e:
         if e.status != 429:
             log.error(f"[Jano/{st.cfg.name}] Error renaming category: {e}")
@@ -1326,20 +1218,20 @@ class BotView(discord.ui.View):
         super().__init__(timeout=timeout)
         self.message: discord.Message | None = None
 
-    async def _close_message(self, embed: discord.Embed, delete_after: int = 0):
-        if self.message:
-            try:
-                await self.message.edit(embed=embed, view=None)
-                if delete_after > 0:
-                    await asyncio.sleep(delete_after)
-                    await self.message.delete()
-            except Exception:
-                pass
+    async def _finish(self, embed: discord.Embed, delay: int = 120):
+        """Replace the message with a final embed (no buttons) and delete it after `delay` seconds."""
+        if not self.message:
+            return
+        try:
+            await self.message.edit(embed=embed, view=None)
+        except Exception:
+            return
+        _spawn(_delete_after(self.message, delay))
 
     async def on_timeout(self):
-        await self._close_message(
+        await self._finish(
             JanoEmbed(description="⏱️ Interaction expired — use the command again if needed.", color=0x95A5A6),
-            delete_after=30
+            delay=30
         )
 
 
@@ -1347,9 +1239,17 @@ class BotView(discord.ui.View):
 # VIEWS — Close confirmation
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def _resume_and_reply(view, interaction: discord.Interaction, title: str):
+    """Shared handler of the 'Resume automatic schedule' buttons."""
+    await interaction.response.defer(ephemeral=True)
+    view.stop()
+    embed = await view.plugin._execute_resume(view.st, title)
+    await _followup_send(interaction, embed)
+
+
 class ViewCloseConfirm(BotView):
     def __init__(self, st: InstanceState, info_manual, plugin: Jano):
-        super().__init__(timeout=120)
+        super().__init__()
         self.st          = st
         self.info_manual = info_manual
         self.plugin      = plugin
@@ -1376,10 +1276,7 @@ class ViewCloseConfirm(BotView):
 
     @discord.ui.button(label="Resume automatic schedule", style=discord.ButtonStyle.primary, emoji="♻️")
     async def resume_schedule(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        self.stop()
-        embed = await self.plugin._execute_resume(self.st, "🔴 Access closed · ♻️ Schedule resumed")
-        await _followup_send(interaction, embed)
+        await _resume_and_reply(self, interaction, "🔴 Access closed · ♻️ Schedule resumed")
 
 
 class ViewResumeAuto(BotView):
@@ -1390,10 +1287,7 @@ class ViewResumeAuto(BotView):
 
     @discord.ui.button(label="Resume automatic schedule", style=discord.ButtonStyle.primary, emoji="♻️")
     async def btn_resume_auto(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        self.stop()
-        embed = await self.plugin._execute_resume(self.st, "♻️ Schedule resumed")
-        await _followup_send(interaction, embed)
+        await _resume_and_reply(self, interaction, "♻️ Schedule resumed")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1402,7 +1296,7 @@ class ViewResumeAuto(BotView):
 
 class ViewSetupEmpty(BotView):
     def __init__(self, guild: discord.Guild, plugin: Jano):
-        super().__init__(timeout=120)
+        super().__init__()
         self.guild  = guild
         self.plugin = plugin
 
@@ -1412,14 +1306,11 @@ class ViewSetupEmpty(BotView):
 
 
 class ViewSetup(BotView):
-    def __init__(self, st: InstanceState, is_global: bool, guild: discord.Guild, plugin: Jano):
-        super().__init__(timeout=120)
-        self.st        = st
-        self.is_global = is_global
-        self.guild     = guild
-        self.plugin    = plugin
-        if not is_global:
-            self.remove_item(self.configure_access_roles)
+    def __init__(self, st: InstanceState, guild: discord.Guild, plugin: Jano):
+        super().__init__()
+        self.st     = st
+        self.guild  = guild
+        self.plugin = plugin
 
     @discord.ui.button(label="Edit instance", style=discord.ButtonStyle.primary, emoji="✏️", row=0)
     async def btn_edit_instance(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1473,7 +1364,7 @@ class ViewSetup(BotView):
             color=0xE74C3C
         )
         for name, st in self.plugin.states.items():
-            cat = self.guild.get_channel(st.get_category_id())
+            cat = self.guild.get_channel(st.cfg.category_id)
             embed.add_field(name=name, value=f"📦 {cat.name if cat else '❌ Not found'}", inline=True)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         view.message = await interaction.original_response()
@@ -1485,7 +1376,7 @@ class ViewSetup(BotView):
 
 class ViewSelectDelete(BotView):
     def __init__(self, guild: discord.Guild, plugin: Jano):
-        super().__init__(timeout=120)
+        super().__init__()
         self.guild          = guild
         self.plugin         = plugin
         self._selected_name = None
@@ -1554,43 +1445,36 @@ class ModalConfirmDelete(discord.ui.Modal, title="⚠️ Confirm deletion"):
 # WIZARD — New / Edit instance (5 steps)
 # ══════════════════════════════════════════════════════════════════════════════
 
+@dataclass
 class WizardData:
-    def __init__(self):
-        self.name: str               = ""
-        self.original_name: str      = ""
-        self.st: object              = None
-        self.category_id: int        = None
-        self.text_channel_id: int    = None
-        self.voice_channel_id: int   = None
-        self.role_id: int            = None
-        self.mention_role_id: int    = None
-        self.active_days: list       = []
-        self.opening_time: str       = "19:00"
-        self.closing_time: str       = "22:00"
-        self.max_manual_hours: float = 0.0
-        self.status_icon: bool       = True
+    name:             str          = ""
+    st:               object       = None      # InstanceState being edited (None when creating)
+    category_id:      int | None   = None
+    text_channel_id:  int | None   = None
+    voice_channel_id: int | None   = None
+    role_id:          int | None   = None
+    mention_role_id:  int | None   = None
+    active_days:      list         = field(default_factory=list)
+    opening_time:     str          = "19:00"
+    closing_time:     str          = "22:00"
+    max_manual_hours: float        = 0.0
+    status_icon:      bool         = True
 
     @classmethod
     def from_state(cls, st: InstanceState) -> "WizardData":
-        d                  = cls()
-        d.st               = st
-        d.original_name    = st.cfg.name
-        d.name             = st.cfg.name
-        d.category_id      = st.cfg.category_id
-        d.text_channel_id  = st.cfg.text_channel_id
-        d.voice_channel_id = st.cfg.voice_channel_id
-        d.role_id          = st.cfg.role_id
-        d.mention_role_id  = st.cfg.mention_role_id
-        d.active_days      = list(st.cfg.active_days)
-        d.opening_time     = st.cfg.opening_time
-        d.closing_time     = st.cfg.closing_time
-        d.max_manual_hours = st.cfg.max_manual_hours
-        d.status_icon      = st.cfg.status_icon
-        return d
+        cfg = st.cfg
+        return cls(
+            name=cfg.name, st=st, category_id=cfg.category_id,
+            text_channel_id=cfg.text_channel_id, voice_channel_id=cfg.voice_channel_id,
+            role_id=cfg.role_id, mention_role_id=cfg.mention_role_id,
+            active_days=list(cfg.active_days), opening_time=cfg.opening_time,
+            closing_time=cfg.closing_time, max_manual_hours=cfg.max_manual_hours,
+            status_icon=cfg.status_icon,
+        )
 
 
 def _wizard_embed(step: int, name: str, description: str) -> discord.Embed:
-    titles = {2: "📺 Channels", 3: "👥 Roles", 6: "📋 Summary"}
+    titles = {2: "📺 Channels", 3: "👥 Roles"}
     return JanoEmbed(title=f"⚙️ '{name}' — {titles.get(step, f'Step {step}')}", description=description, color=0x3498DB)
 
 def _wizard_summary_embed(data: WizardData, guild: discord.Guild, edit_mode=False) -> discord.Embed:
@@ -1635,6 +1519,18 @@ def _wizard_summary_embed(data: WizardData, guild: discord.Guild, edit_mode=Fals
 
 
 # ── Step 1: Name ──────────────────────────────────────────────────────────────
+
+async def _return_to_summary(view, interaction: discord.Interaction, title: str):
+    """After editing one wizard step from the summary: refresh the summary and close this step."""
+    try:
+        await view.summary.message.edit(embed=_wizard_summary_embed(view.data, view.guild), view=view.summary)
+    except Exception:
+        pass
+    embed_closed = JanoEmbed(title=title, description="Changes saved above.\n\nPress **💾 Save changes** to apply.", color=0x2ECC71)
+    await interaction.response.edit_message(embed=embed_closed, view=None)
+    msg = await interaction.original_response()
+    _spawn(_delete_after(msg, delay=10))
+
 
 def _parse_status_icon(value: str, default: bool = False) -> bool:
     """Parse a yes/no text input into a boolean. Tolerant of common variants."""
@@ -1691,7 +1587,7 @@ class WizardStep1Name(discord.ui.Modal, title="Instance name & Status Icon"):
 
 class WizardStep2Channels(BotView):
     def __init__(self, data: WizardData, guild: discord.Guild, plugin: Jano, summary=None):
-        super().__init__(timeout=120)
+        super().__init__()
         self.data     = data
         self.guild    = guild
         self.plugin   = plugin
@@ -1755,15 +1651,7 @@ class WizardStep2Channels(BotView):
             return
         self.stop()
         if self.summary:
-            embed_summary = _wizard_summary_embed(self.data, self.guild)
-            try:
-                await self.summary.message.edit(embed=embed_summary, view=self.summary)
-            except Exception:
-                pass
-            embed_closed = JanoEmbed(title="✅ Channels updated", description="Changes saved above.\n\nPress **💾 Save changes** to apply.", color=0x2ECC71)
-            await interaction.response.edit_message(embed=embed_closed, view=None)
-            msg = await interaction.original_response()
-            _spawn(_delete_after(msg, delay=10))
+            await _return_to_summary(self, interaction, "✅ Channels updated")
             return
         view  = WizardStep3Roles(self.data, self.guild, self.plugin)
         embed = _wizard_embed(3, self.data.name, "Select the roles.\n\nBoth optional. Empty Visibility role = @everyone.")
@@ -1779,7 +1667,7 @@ class WizardStep2Channels(BotView):
 
 class WizardCategoryPicker(BotView):
     def __init__(self, parent: WizardStep2Channels, options: list):
-        super().__init__(timeout=120)
+        super().__init__()
         self.parent     = parent
         select          = discord.ui.Select(placeholder="Select an option", min_values=1, max_values=1, row=0, custom_id="w_cat_pick", options=options)
         select.callback = self._select_callback
@@ -1819,7 +1707,7 @@ class WizardCategoryPicker(BotView):
 
 class WizardStep3Roles(BotView):
     def __init__(self, data: WizardData, guild: discord.Guild, plugin: Jano, summary=None):
-        super().__init__(timeout=120)
+        super().__init__()
         self.data            = data
         self.guild           = guild
         self.plugin          = plugin
@@ -1860,22 +1748,9 @@ class WizardStep3Roles(BotView):
             self.data.mention_role_id = None if self._sel_mention == "__none__" else int(self._sel_mention)
         self.stop()
         if self.summary:
-            embed_summary = _wizard_summary_embed(self.data, self.guild)
-            try:
-                await self.summary.message.edit(embed=embed_summary, view=self.summary)
-            except Exception:
-                pass
-            embed_closed = JanoEmbed(title="✅ Roles updated", description="Changes saved above.\n\nPress **💾 Save changes** to apply.", color=0x2ECC71)
-            await interaction.response.edit_message(embed=embed_closed, view=None)
-            msg = await interaction.original_response()
-            _spawn(_delete_after(msg, delay=10))
+            await _return_to_summary(self, interaction, "✅ Roles updated")
             return
-        if self.message:
-            try:
-                await self.message.edit(embed=JanoEmbed(description="✅ Roles updated.", color=0x2ECC71), view=None)
-                _spawn(_delete_after(self.message))
-            except Exception:
-                pass
+        await self._finish(JanoEmbed(description="✅ Roles updated.", color=0x2ECC71))
         await interaction.response.send_modal(WizardStep4Schedule(self.data, self.plugin))
 
 
@@ -1883,11 +1758,10 @@ class WizardStep3Roles(BotView):
 
 class ViewRetry(BotView):
     """Shows an error message with a button to reopen the schedule modal."""
-    def __init__(self, modal_class, modal_kwargs: dict, error: str):
-        super().__init__(timeout=120)
+    def __init__(self, modal_class, modal_kwargs: dict):
+        super().__init__()
         self.modal_class  = modal_class
         self.modal_kwargs = modal_kwargs
-        self.error        = error
         btn               = discord.ui.Button(label="✏️ Fix and try again", style=discord.ButtonStyle.primary)
         btn.callback      = self._reopen
         self.add_item(btn)
@@ -1904,7 +1778,7 @@ class ViewRetry(BotView):
 
 class WizardStep4Schedule(discord.ui.Modal):
 
-    def __init__(self, data: WizardData, plugin: Jano, summary=None, error: str = None):
+    def __init__(self, data: WizardData, plugin: Jano, summary=None):
         super().__init__(title="Schedule & Limit")
         self.data    = data
         self.plugin  = plugin
@@ -1940,8 +1814,7 @@ class WizardStep4Schedule(discord.ui.Modal):
         """Send ephemeral error message with button to reopen modal with pre-filled data."""
         view = ViewRetry(
             modal_class=WizardStep4Schedule,
-            modal_kwargs={"data": self.data, "plugin": self.plugin, "summary": self.summary},
-            error=error
+            modal_kwargs={"data": self.data, "plugin": self.plugin, "summary": self.summary}
         )
         embed = JanoEmbed(
             title="⚠️ Invalid input — Schedule & Limit",
@@ -2024,7 +1897,7 @@ class WizardStep4Schedule(discord.ui.Modal):
 
 class WizardStep5Summary(BotView):
     def __init__(self, data: WizardData, guild: discord.Guild, plugin: Jano, edit_mode=False):
-        super().__init__(timeout=120)
+        super().__init__()
         self.data      = data
         self.guild     = guild
         self.plugin    = plugin
@@ -2108,12 +1981,7 @@ class WizardStep5Summary(BotView):
                 await self.plugin._release_category(old_category_id, d.name)
             # Apply category rename immediately so the change is visible at once
             _spawn(self.plugin._evaluate_instance(st))
-            if self.message:
-                try:
-                    await self.message.edit(embed=JanoEmbed(title=f"✅ Instance '{d.name}' updated!", color=0x2ECC71), view=None)
-                    _spawn(_delete_after(self.message))
-                except Exception:
-                    pass
+            await self._finish(JanoEmbed(title=f"✅ Instance '{d.name}' updated!", color=0x2ECC71))
             await interaction.response.send_message(embed=JanoEmbed(
                 title=f"✅ Changes saved — {d.name}", description="All changes applied immediately.", color=0x2ECC71
             ), ephemeral=True, delete_after=120)
@@ -2132,21 +2000,15 @@ class WizardStep5Summary(BotView):
                 mention_role_id=d.mention_role_id, active_days=d.active_days,
                 opening_time=d.opening_time, closing_time=d.closing_time,
                 max_manual_hours=d.max_manual_hours,
-                command_role_ids_global=self.plugin.command_role_ids_global,
                 command_role_ids_instance=None,
                 status_icon=d.status_icon,
                 tz=self.plugin.tz,
             )
             await self.plugin._create_instance(cfg)
-            if self.message:
-                try:
-                    await self.message.edit(embed=JanoEmbed(
-                        title=f"✅ Instance '{d.name}' created!",
-                        description="You can now use all bot commands with this instance.", color=0x2ECC71
-                    ), view=None)
-                    _spawn(_delete_after(self.message))
-                except Exception:
-                    pass
+            await self._finish(JanoEmbed(
+                title=f"✅ Instance '{d.name}' created!",
+                description="You can now use all bot commands with this instance.", color=0x2ECC71
+            ))
             await interaction.response.send_message(embed=JanoEmbed(
                 title=f"✅ Instance created — {d.name}",
                 description=f"The instance **{d.name}** is ready.\n\nUse `/jano setup` to modify its configuration.", color=0x2ECC71
@@ -2164,12 +2026,7 @@ class WizardStep5Summary(BotView):
 
     async def _cancel(self, interaction: discord.Interaction):
         self.stop()
-        if self.message:
-            try:
-                await self.message.edit(embed=JanoEmbed(description="❌ Cancelled. No changes were made.", color=0x95A5A6), view=None)
-                _spawn(_delete_after(self.message, delay=10))
-            except Exception:
-                pass
+        await self._finish(JanoEmbed(description="❌ Cancelled. No changes were made.", color=0x95A5A6), delay=10)
         await interaction.response.defer()
 
 
@@ -2230,7 +2087,7 @@ class WizardEditName(discord.ui.Modal, title="Name & Status Icon"):
 
 class ViewAccessRoles(BotView):
     def __init__(self, guild: discord.Guild, plugin: Jano):
-        super().__init__(timeout=120)
+        super().__init__()
         self.guild      = guild
         self.plugin     = plugin
         self.selections = {n: None for n in plugin._get_names()}
@@ -2339,7 +2196,7 @@ class ViewAccessRoles(BotView):
 
 class ViewSaveAccessRoles(BotView):
     def __init__(self, parent: ViewAccessRoles):
-        super().__init__(timeout=120)
+        super().__init__()
         self.parent  = parent
         btn          = discord.ui.Button(label="Save instance roles", style=discord.ButtonStyle.success, emoji="💾", row=0, custom_id="save_roles")
         btn.callback = self._save_callback
