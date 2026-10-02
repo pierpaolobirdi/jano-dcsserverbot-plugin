@@ -561,37 +561,58 @@ class Jano(Plugin):
 
     async def _migrate_db(self):
         """Apply any missing DB schema changes automatically on startup.
-        Add new ALTER TABLE statements here for every future schema change —
+        Add new ALTER TABLE statements to `migrations` for every future schema change —
         IF NOT EXISTS ensures they are safe to run repeatedly."""
         migrations = [
             # v1.0 → v1.1: status_icon per instance
             "ALTER TABLE jano_instances ADD COLUMN IF NOT EXISTS status_icon BOOLEAN NOT NULL DEFAULT true",
-
-            # v1.1 → v1.2: rename Spanish columns to English (safe — checks existence first)
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_instances' AND column_name='dias_activos') THEN ALTER TABLE jano_instances RENAME COLUMN dias_activos TO active_days; END IF; END $$",
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_instances' AND column_name='hora_apertura') THEN ALTER TABLE jano_instances RENAME COLUMN hora_apertura TO opening_time; END IF; END $$",
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_instances' AND column_name='hora_cierre') THEN ALTER TABLE jano_instances RENAME COLUMN hora_cierre TO closing_time; END IF; END $$",
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_instances' AND column_name='max_horas_manual') THEN ALTER TABLE jano_instances RENAME COLUMN max_horas_manual TO max_manual_hours; END IF; END $$",
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_instances' AND column_name='command_role_ids_instancia') THEN ALTER TABLE jano_instances RENAME COLUMN command_role_ids_instancia TO command_role_ids_instance; END IF; END $$",
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_state' AND column_name='ultimo_mensaje_id') THEN ALTER TABLE jano_state RENAME COLUMN ultimo_mensaje_id TO last_message_id; END IF; END $$",
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_state' AND column_name='nombre_categoria_cache') THEN ALTER TABLE jano_state RENAME COLUMN nombre_categoria_cache TO category_name_cache; END IF; END $$",
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_state' AND column_name='override_manual') THEN ALTER TABLE jano_state RENAME COLUMN override_manual TO manual_override; END IF; END $$",
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_state' AND column_name='override_timestamp') THEN ALTER TABLE jano_state RENAME COLUMN override_timestamp TO override_ts; END IF; END $$",
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_state' AND column_name='horas_manual_activo') THEN ALTER TABLE jano_state RENAME COLUMN horas_manual_activo TO manual_hours_active; END IF; END $$",
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_state' AND column_name='max_horas_override') THEN ALTER TABLE jano_state RENAME COLUMN max_horas_override TO max_hours_override; END IF; END $$",
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_state' AND column_name='horario_override') THEN ALTER TABLE jano_state RENAME COLUMN horario_override TO schedule_override; END IF; END $$",
-
-            # v1.1 → v1.2 (missed): estado_actual → current_state
-            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jano_state' AND column_name='estado_actual') THEN ALTER TABLE jano_state RENAME COLUMN estado_actual TO current_state; END IF; END $$",
-
             # ── Add future migrations below this line ──────────────────────────
         ]
         try:
             async with self.apool.connection() as conn:
                 for sql in migrations:
                     await conn.execute(sql)
+                await self._migrate_legacy_columns(conn)
         except Exception as e:
             self.log.error(f"Error applying DB migrations: {e}")
+
+    # TODO (pending): remove _LEGACY_COLUMN_RENAMES and _migrate_legacy_columns() once every
+    # installation has been migrated to the English column names (v1.2+). After that, nothing
+    # else in the plugin depends on the old Spanish names.
+    _LEGACY_COLUMN_RENAMES = (
+        # (table, old column, new column)
+        ("jano_instances", "dias_activos",               "active_days"),
+        ("jano_instances", "hora_apertura",             "opening_time"),
+        ("jano_instances", "hora_cierre",               "closing_time"),
+        ("jano_instances", "max_horas_manual",          "max_manual_hours"),
+        ("jano_instances", "command_role_ids_instancia", "command_role_ids_instance"),
+        ("jano_state",     "ultimo_mensaje_id",         "last_message_id"),
+        ("jano_state",     "nombre_categoria_cache",    "category_name_cache"),
+        ("jano_state",     "override_manual",           "manual_override"),
+        ("jano_state",     "override_timestamp",        "override_ts"),
+        ("jano_state",     "horas_manual_activo",       "manual_hours_active"),
+        ("jano_state",     "max_horas_override",        "max_hours_override"),
+        ("jano_state",     "horario_override",          "schedule_override"),
+        ("jano_state",     "estado_actual",             "current_state"),
+    )
+
+    async def _migrate_legacy_columns(self, conn):
+        """Rename old Spanish columns to their English names (v1.1 → v1.2).
+
+        One catalog query finds which legacy columns still exist; only those are renamed,
+        so on an already-migrated database this costs a single SELECT and no ALTERs.
+        """
+        tables = sorted({t for t, _, _ in self._LEGACY_COLUMN_RENAMES})
+        cur = await conn.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = ANY(%s)",
+            (tables,),
+        )
+        existing = {(t, c) for t, c in await cur.fetchall()}
+        for table, old, new in self._LEGACY_COLUMN_RENAMES:
+            if (table, old) in existing and (table, new) not in existing:
+                await conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
+                self.log.info(f"DB migration: {table}.{old} → {new}")
 
     async def _save_global_roles(self):
         try:
