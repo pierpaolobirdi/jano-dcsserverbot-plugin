@@ -5,7 +5,7 @@ set "SCRIPT_DIR=%~dp0"
 
 echo.
 echo ================================================
-echo  Jano Plugin Installer for DCSServerBot v4.x.x
+echo  Jano Plugin Installer for DCSServerBot
 echo ================================================
 echo.
 

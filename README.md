@@ -69,7 +69,7 @@ With no instances yet, `/jano setup` offers a single **New instance** button. On
 
 1. Download the latest release zip from the [Releases](../../releases) page
 2. Extract it anywhere on your PC
-3. Double-click **`install.bat`**
+3. Double-click **`install.cmd`**
 4. The installer will:
    - Detect your DCSServerBot installation automatically
    - Install `tzdata` (Windows timezone data) into the DCSServerBot Python environment
