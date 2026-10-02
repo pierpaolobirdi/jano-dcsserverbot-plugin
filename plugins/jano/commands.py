@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
-COMMANDS_VERSION = "4.0.3"
+COMMANDS_VERSION = "4.0.4"
 
 _MAX_INSTANCES = 4
 
@@ -51,6 +51,16 @@ class JanoEmbed(discord.Embed):
         super().__init__(*args, **kwargs)
         self.set_footer(text=EMBED_FOOTER)
 
+
+def _add_field(modal: discord.ui.Modal, label: str, **kwargs) -> discord.ui.TextInput:
+    """Add a text field to a modal and return it.
+
+    The visible label lives in a discord.ui.Label wrapper: TextInput(label=…) is deprecated since
+    discord.py 2.6. Labels are limited to 45 characters.
+    """
+    field = discord.ui.TextInput(**kwargs)
+    modal.add_item(discord.ui.Label(text=label, component=field))
+    return field
 
 def _parse_hhmm(text: str) -> int | None:
     """Minutes since midnight for 'H:MM' / 'HH:MM', or None when the text is not a valid time."""
@@ -341,27 +351,18 @@ class InstanceState:
 class ModalCommsDuration(discord.ui.Modal, title="Open comms — set duration"):
     """Modal that asks for duration when opening comms manually."""
 
-    _f_duration = discord.ui.TextInput(
-        label="Duration in hours (0 or empty = no limit)",
-        placeholder="e.g. 2  or  2.5  or  0 for no limit",
-        required=False,
-        max_length=10,
-        style=discord.TextStyle.short,
-    )
-
     def __init__(self, st: "InstanceState", plugin: "Jano"):
         super().__init__()
         self.st     = st
         self.plugin = plugin
         ceiling     = st.active_ceiling()
         if ceiling > 0:
-            self._f_duration.label       = f"Duration in hours — max is {ceiling}h"
-            self._f_duration.placeholder = f"1 to {ceiling}  ·  0 = apply max ({ceiling}h)  ·  empty = apply max"
+            label       = f"Duration in hours — max is {ceiling}h"
+            placeholder = f"1 to {ceiling}  ·  0 = apply max ({ceiling}h)  ·  empty = apply max"
         else:
-            self._f_duration.label       = "Duration in hours (0 or empty = no limit)"
-            self._f_duration.placeholder = "e.g. 2  or  2.5  ·  0 or empty = no limit"
-        # Note: _f_duration is a class-level TextInput, discord.py adds it automatically
-        # Do NOT call self.add_item() — that would duplicate it
+            label       = "Duration in hours (0 or empty = no limit)"
+            placeholder = "e.g. 2  or  2.5  ·  0 or empty = no limit"
+        self._f_duration = _add_field(self, label, placeholder=placeholder, required=False, max_length=10)
 
     async def on_submit(self, interaction: discord.Interaction):
         raw      = self._f_duration.value.strip()
@@ -1387,13 +1388,12 @@ class ViewSelectDelete(BotView):
 
 
 class ModalConfirmDelete(discord.ui.Modal, title="⚠️ Confirm deletion"):
-    confirmation = discord.ui.TextInput(label='Type DELETE to confirm', placeholder="DELETE", required=True, max_length=10)
-
     def __init__(self, name: str, is_last: bool, plugin: Jano):
         super().__init__()
-        self.name    = name
-        self.is_last = is_last
-        self.plugin  = plugin
+        self.name         = name
+        self.is_last      = is_last
+        self.plugin       = plugin
+        self.confirmation = _add_field(self, "Type DELETE to confirm", placeholder="DELETE", required=True, max_length=10)
         title_text   = f"Delete '{name}' — type DELETE"
         if len(title_text) <= 45:
             self.title = title_text
@@ -1538,18 +1538,16 @@ class WizardStep1Name(discord.ui.Modal, title="Instance name & Status Icon"):
     def __init__(self, plugin: Jano):
         super().__init__()
         self.plugin  = plugin
-        self._f_name = discord.ui.TextInput(
-            label="Instance name (required)",
+        self._f_name = _add_field(
+            self, "Instance name (required)",
             placeholder="E.g.: Missions, Training, Events...",
             required=True, max_length=32
         )
-        self._f_status = discord.ui.TextInput(
-            label="Status Icon — show 🟢🔴 on category? (yes/no)",
+        self._f_status = _add_field(
+            self, "Status Icon — show 🟢🔴 on category? (yes/no)",
             placeholder="yes = show 🟢🔴 on category  |  no = keep original name  |  default: no",
             required=False, max_length=5
         )
-        self.add_item(self._f_name)
-        self.add_item(self._f_status)
 
     async def on_submit(self, interaction: discord.Interaction):
         name = self._f_name.value.strip()
@@ -1771,32 +1769,30 @@ class WizardStep4Schedule(discord.ui.Modal):
         self.data    = data
         self.plugin  = plugin
         self.summary = summary
-        self._f_days = discord.ui.TextInput(
-            label="Active days (empty = manual mode only)",
+        self._f_days = _add_field(
+            self, "Active days (empty = manual mode only)",
             placeholder="E.g.: 0,1,2,3,4  (0=Mon, 6=Sun)",
             required=False, max_length=20,
             default=",".join(str(d) for d in data.active_days) if data.active_days else ""
         )
-        self._f_opening = discord.ui.TextInput(
-            label="Opening time (HH:MM)",
+        self._f_opening = _add_field(
+            self, "Opening time (HH:MM)",
             placeholder="E.g.: 18:15",
             required=False, max_length=5,
             default=data.opening_time if data.active_days else ""
         )
-        self._f_closing = discord.ui.TextInput(
-            label="Closing time (HH:MM)",
+        self._f_closing = _add_field(
+            self, "Closing time (HH:MM)",
             placeholder="E.g.: 21:30",
             required=False, max_length=5,
             default=data.closing_time if data.active_days else ""
         )
-        self._f_hours = discord.ui.TextInput(
-            label="Max manual hours (0 or empty = no limit)",
+        self._f_hours = _add_field(
+            self, "Max manual hours (0 or empty = no limit)",
             placeholder="E.g.: 2.5",
             required=False, max_length=5,
             default=str(data.max_manual_hours) if data.max_manual_hours > 0 else ""
         )
-        for f in [self._f_days, self._f_opening, self._f_closing, self._f_hours]:
-            self.add_item(f)
 
     async def _send_error(self, interaction, error: str):
         """Send ephemeral error message with button to reopen modal with pre-filled data."""
@@ -2002,23 +1998,20 @@ class WizardEditName(discord.ui.Modal, title="Name & Status Icon"):
     def __init__(self, summary: WizardStep5Summary):
         super().__init__()
         self.summary = summary
-        # Store field references as instance attributes for access in on_submit
-        self._f_name = discord.ui.TextInput(
-            label="Instance name (empty = keep current)",
+        self._f_name = _add_field(
+            self, "Instance name (empty = keep current)",
             placeholder="Leave empty to keep current name",
             required=False,
             max_length=32,
             default=summary.data.name,
         )
-        self._f_status = discord.ui.TextInput(
-            label="Status Icon — show 🟢🔴 on category? (yes/no)",
+        self._f_status = _add_field(
+            self, "Status Icon — show 🟢🔴 on category? (yes/no)",
             placeholder="yes = show 🟢🔴  |  no = keep original name  |  empty = keep current",
             required=False,
             max_length=5,
             default="yes" if summary.data.status_icon else "no",
         )
-        self.add_item(self._f_name)
-        self.add_item(self._f_status)
 
     async def on_submit(self, interaction: discord.Interaction):
         new_name = self._f_name.value.strip()

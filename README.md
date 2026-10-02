@@ -40,7 +40,7 @@ All commands use the `/jano` prefix:
 - [DCSServerBot](https://github.com/Special-K-s-Flightsim-Bots/DCSServerBot) v3.x
 - Python 3.11+
 - PostgreSQL 14+
-- discord.py 2.x (included with DCSServerBot)
+- discord.py 2.6+ (included with DCSServerBot) — modals use `discord.ui.Label`
 - `tzdata` — Windows timezone data (installed automatically by the installer)
 
 ---
