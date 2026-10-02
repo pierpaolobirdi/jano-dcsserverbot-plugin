@@ -157,13 +157,14 @@ Run `/jano setup` and follow the wizard:
 
 ## Database
 
-Jano uses three PostgreSQL tables, all created automatically on first startup:
+Jano uses two PostgreSQL tables, both created automatically on first startup:
 
 - `jano_instances` — instance configuration (channels, roles, schedule)
 - `jano_state` — runtime state (open/closed, manual overrides, message IDs)
-- `jano_global` — global command role IDs
 
 Database migrations are applied automatically on each startup — safe to run repeatedly.
+
+The global command roles come only from `command_role_ids` in `jano.yaml`. Installations created with an older version may still have an unused `jano_global` table; it can be dropped with `DROP TABLE jano_global;`.
 
 ---
 

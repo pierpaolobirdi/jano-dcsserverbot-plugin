@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
-COMMANDS_VERSION = "4.0.2"
+COMMANDS_VERSION = "4.0.3"
 
 _MAX_INSTANCES = 4
 
@@ -388,7 +388,7 @@ class Jano(Plugin):
         super().__init__(bot, eventlistener)
         # In-memory state dict: name → InstanceState
         self.states: dict[str, InstanceState] = {}
-        # Global command role IDs (from DB, overrides yaml default)
+        # Global command role IDs, resolved from jano.yaml in on_ready
         self.command_role_ids_global: list[int] = []
         # Raw command_role_ids from jano.yaml (role names or numeric IDs), resolved in on_ready
         self._command_role_ids_raw: list = []
@@ -439,8 +439,7 @@ class Jano(Plugin):
         self._server_id = guild.id
         self.log.info(f"Connected to Guild: {guild.name}")
         # Resolve role names/IDs from YAML now that the guild is available.
-        # DB values take priority — only use YAML as bootstrap if DB is empty.
-        await self._resolve_yaml_roles(guild)
+        self._resolve_yaml_roles(guild)
         await self._migrate_db()
         await self._load_state()
         await self._clean_orphan_embeds()
@@ -449,8 +448,8 @@ class Jano(Plugin):
             self.scheduler.start()
         self.log.debug(f"Ready - {len(self.states)} instance(s) loaded.")
 
-    async def _resolve_yaml_roles(self, guild: discord.Guild):
-        """Resolve role names or numeric IDs from jano.yaml into a list of int IDs.
+    def _resolve_yaml_roles(self, guild: discord.Guild):
+        """Resolve role names or numeric IDs from jano.yaml into the global command role IDs.
         Supports both styles used in DCSServerBot (e.g. 'Admin' or 123456789)."""
         resolved = []
         for val in self._command_role_ids_raw:
@@ -467,10 +466,7 @@ class Jano(Plugin):
                 self.log.debug(f"Role '{val}' resolved → ID {role.id}")
             else:
                 self.log.warning(f"Role '{val}' not found in guild — skipping")
-        # Only apply YAML roles as bootstrap if DB has nothing yet
-        if resolved and not self.command_role_ids_global:
-            self.command_role_ids_global = resolved
-            # YAML bootstrap — no log needed, stored in DB
+        self.command_role_ids_global = resolved
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -567,13 +563,7 @@ class Jano(Plugin):
         """Load all instances and their state from PostgreSQL."""
         try:
             async with self.apool.connection() as conn:
-                # Global roles
                 async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
-                    await cur.execute("SELECT command_role_ids_global FROM jano_global WHERE id=1")
-                    row = await cur.fetchone()
-                    if row and row["command_role_ids_global"]:
-                        self.command_role_ids_global = list(row["command_role_ids_global"])
-
                     # Instances + their runtime state in a single query
                     await cur.execute("""
                         SELECT i.*,
@@ -716,38 +706,15 @@ class Jano(Plugin):
                             return
 
             if text_ch:
-                if is_open:
-                    if not st.last_message_id and source == "SCHEDULE":
-                        voice_id  = st.cfg.voice_channel_id
-                        inst_name = st.cfg.name
-                        tpl       = self._open_message_template
-                        # Build announcement embed from jano.yaml template or defaults.
-                        # Supported keys under open_message:
-                        #   title: "Custom title — {name}"
-                        #   body:  "Custom body — connect to {voice}"
-                        # {name} and {voice} are replaced with the instance name and
-                        # voice-channel mention respectively.
-                        voice_mention = f"<#{voice_id}>" if voice_id else "Voice Channel"
-                        def _fmt(text: str) -> str:
-                            return text.replace("{name}", inst_name).replace("{voice}", voice_mention)
-
-                        title        = _fmt(tpl.get("title", "🟢   __**{name} ACCESS CHANNELS ARE OPEN**__"))
-                        body_default = (
-                            f"The **{inst_name}** channels will remain open until the end of the event."
-                            f"\n\nPlease connect to the channel:\n\n{voice_mention}\n\n"
-                            f"Before the start of **{inst_name}**."
-                        )
-                        desc       = _fmt(tpl.get("body", body_default))
-                        embed      = JanoEmbed(title=title, description=desc, color=0x2ECC71)
-                        mention_id = st.cfg.mention_role_id
-                        content    = f"<@&{mention_id}>" if mention_id else None
-                        msg        = await text_ch.send(
-                            content=content,
-                            embed=embed,
-                            allowed_mentions=discord.AllowedMentions(roles=True)
-                        )
-                        st.last_message_id = msg.id
-                elif st.last_message_id:
+                if is_open and not st.last_message_id and source == "SCHEDULE":
+                    mention_id = st.cfg.mention_role_id
+                    msg = await text_ch.send(
+                        content=f"<@&{mention_id}>" if mention_id else None,
+                        embed=self._announcement_embed(st),
+                        allowed_mentions=discord.AllowedMentions(roles=True)
+                    )
+                    st.last_message_id = msg.id
+                elif not is_open and st.last_message_id:
                     await _delete_message(text_ch, st.last_message_id)
                     st.last_message_id = None
 
@@ -755,6 +722,32 @@ class Jano(Plugin):
             await st.save_state()
         finally:
             st._evaluating = False
+
+    def _announcement_embed(self, st: InstanceState) -> discord.Embed:
+        """Embed posted when the channels open on schedule, built from the jano.yaml template or defaults.
+
+        Supported keys under open_message:
+          title: "Custom title — {name}"
+          body:  "Custom body — connect to {voice}"
+        {name} and {voice} are replaced with the instance name and the voice-channel mention.
+        """
+        voice_id      = st.cfg.voice_channel_id
+        voice_mention = f"<#{voice_id}>" if voice_id else "Voice Channel"
+        tpl           = self._open_message_template
+
+        def fmt(text: str) -> str:
+            return text.replace("{name}", st.cfg.name).replace("{voice}", voice_mention)
+
+        body_default = (
+            f"The **{st.cfg.name}** channels will remain open until the end of the event."
+            f"\n\nPlease connect to the channel:\n\n{voice_mention}\n\n"
+            f"Before the start of **{st.cfg.name}**."
+        )
+        return JanoEmbed(
+            title=fmt(tpl.get("title", "🟢   __**{name} ACCESS CHANNELS ARE OPEN**__")),
+            description=fmt(tpl.get("body", body_default)),
+            color=0x2ECC71
+        )
 
     async def _release_category(self, category_id: int, instance_name: str):
         """Clean up a category Jano no longer manages: remove the 🟢/🔴 markers from its name.

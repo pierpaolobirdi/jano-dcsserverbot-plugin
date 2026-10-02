@@ -30,13 +30,3 @@ CREATE TABLE IF NOT EXISTS jano_state (
     max_hours_override      FLOAT,
     schedule_override       JSONB                       -- {days, opening, closing} or NULL
 );
-
--- Global config (single-row table)
-CREATE TABLE IF NOT EXISTS jano_global (
-    id                      INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    command_role_ids_global BIGINT[]
-);
-
-INSERT INTO jano_global (id, command_role_ids_global)
-VALUES (1, ARRAY[]::BIGINT[])
-ON CONFLICT DO NOTHING;
