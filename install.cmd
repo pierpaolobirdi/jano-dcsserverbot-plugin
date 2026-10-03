@@ -13,6 +13,7 @@ set "NEWC="
 set "OLDC="
 set "OKC="
 set "ERRC="
+set "ACTC="
 set "OFF="
 ver | findstr /C:" 10." > nul
 if !ERRORLEVEL! == 0 (
@@ -21,13 +22,14 @@ if !ERRORLEVEL! == 0 (
     set "OLDC=!ESC![31m"
     set "OKC=!ESC![94m"
     set "ERRC=!ESC![91m"
+    set "ACTC=!ESC![96m"
     set "OFF=!ESC![0m"
 )
 
 echo.
-echo ====================================================
+echo ============================================================
 echo  Jano Plugin - Installer / Updater --^> Ver. !NEWC!!NEW_VER!!OFF!
-echo ====================================================
+echo ============================================================
 echo.
 
 :: ── Detect DCSServerBot installation ─────────────────────────────────────────
@@ -144,7 +146,7 @@ findstr /C:"- jano" "!DCSSB_PATH!\config\main.yaml" > nul 2>&1
 if !ERRORLEVEL! == 0 (
     echo       !OKC!OK!OFF! - jano already listed in main.yaml.
 ) else (
-    echo       !ERRC!ACTION REQUIRED!OFF! - Add the following to your config\main.yaml:
+    echo       !ACTC!ACTION REQUIRED!OFF! - Add the following to your config\main.yaml:
     echo.
     echo           opt_plugins:
     echo             - jano
@@ -153,13 +155,16 @@ if !ERRORLEVEL! == 0 (
 
 :: ── Done ─────────────────────────────────────────────────────────────────────
 echo.
-echo ====================================================
+echo ============================================================
+:: Delayed expansion is switched off for this message: with it on, a literal "!" cannot be echoed
+setlocal DisableDelayedExpansion
 if defined COPY_FAIL (
-    echo  !ERRC!Installation FAILED!OFF! - see the messages above. Jano !NEWC!Ver. !NEW_VER!!OFF! was not fully installed.
+    echo  %ERRC%Installation FAILED%OFF% - see the messages above
 ) else (
-    echo  !NEWC!Installation complete^^!!OFF! Jano !NEWC!Ver. !NEW_VER!!OFF!
+    echo  %NEWC%Installation complete!%OFF% Jano %NEWC%Ver. %NEW_VER%%OFF%
 )
-echo ====================================================
+endlocal
+echo ============================================================
 echo.
 echo Next steps:
 echo   1. Make sure 'jano' is listed under opt_plugins in config\main.yaml

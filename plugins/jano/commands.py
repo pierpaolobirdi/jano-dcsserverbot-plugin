@@ -32,7 +32,7 @@ _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
 # install.cmd reads this line to show the installed/new version: keep the format COMMANDS_VERSION = "x.y.z"
-COMMANDS_VERSION = "5.0.2"
+COMMANDS_VERSION = "5.0.3"
 
 _MAX_INSTANCES = 4
 
