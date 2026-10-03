@@ -72,6 +72,7 @@ With no instances yet, `/jano setup` offers a single **New instance** button. On
 3. Double-click **`install.cmd`**
 4. The installer will:
    - Detect your DCSServerBot installation automatically
+   - Show the version being installed and the one already installed (if any)
    - Install `tzdata` (Windows timezone data) into the DCSServerBot Python environment
    - Add `tzdata` to `requirements.local` so it is reinstalled automatically on every DCSServerBot update
    - Copy all plugin files to the correct locations

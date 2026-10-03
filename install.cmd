@@ -3,10 +3,27 @@ setlocal EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
 
+:: -- Version being installed: read from commands.py (single source of truth) ----
+:: The line in commands.py must keep this exact format:  COMMANDS_VERSION = "x.y.z"
+set "NEW_VER=unknown"
+if exist "%SCRIPT_DIR%plugins\jano\commands.py" for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "%SCRIPT_DIR%plugins\jano\commands.py"') do set "NEW_VER=%%~V"
+
+:: -- Colors (ANSI escape codes, Windows 10/11 only; left empty on older systems) -
+set "NEWC="
+set "OLDC="
+set "OFF="
+ver | findstr /C:" 10." > nul
+if !ERRORLEVEL! == 0 (
+    for /f %%E in ('echo prompt $E ^| cmd') do set "ESC=%%E"
+    set "NEWC=!ESC![1;92m"
+    set "OLDC=!ESC![31m"
+    set "OFF=!ESC![0m"
+)
+
 echo.
-echo ================================================
-echo  Jano Plugin Installer for DCSServerBot
-echo ================================================
+echo ====================================================
+echo  Jano Plugin - Installer / Updater --^> Ver. !NEWC!!NEW_VER!!OFF!
+echo ====================================================
 echo.
 
 :: ── Detect DCSServerBot installation ─────────────────────────────────────────
@@ -43,8 +60,23 @@ if not exist "!DCSSB_PATH!\config\main.yaml" (
     exit /b 1
 )
 
+:: -- Version already installed (if any) ------------------------------------------
+set "OLD_VER="
+set "OLD_FILE=!DCSSB_PATH!\plugins\jano\commands.py"
+if exist "!OLD_FILE!" (
+    set "OLD_VER=unknown (no version in the installed file)"
+    for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "!OLD_FILE!"') do set "OLD_VER=%%~V"
+)
+
 echo.
-echo Installing Jano to: !DCSSB_PATH!
+echo Installing Jano !NEWC!Ver. !NEW_VER!!OFF! to: !DCSSB_PATH!
+if not defined OLD_VER (
+    echo Installed now: none ^(new install^)
+) else if "!OLD_VER!"=="!NEW_VER!" (
+    echo Installed now: !NEWC!Ver. !NEW_VER!!OFF! ^(same version - files will be refreshed^)
+) else (
+    echo Installed now: !OLDC!Ver. !OLD_VER!!OFF! --^> updating to !NEWC!Ver. !NEW_VER!!OFF!
+)
 echo.
 
 :: ── Install tzdata ────────────────────────────────────────────────────────────
@@ -102,9 +134,9 @@ if !ERRORLEVEL! == 0 (
 
 :: ── Done ─────────────────────────────────────────────────────────────────────
 echo.
-echo ================================================
-echo  Installation complete!
-echo ================================================
+echo ====================================================
+echo  !NEWC!Installation complete^^!!OFF! Jano !NEWC!Ver. !NEW_VER!!OFF!
+echo ====================================================
 echo.
 echo Next steps:
 echo   1. Make sure 'jano' is listed under opt_plugins in config\main.yaml

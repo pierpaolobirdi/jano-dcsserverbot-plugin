@@ -31,7 +31,8 @@ log = logging.getLogger(__name__)
 _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
-COMMANDS_VERSION = "5.0.0"
+# install.cmd reads this line to show the installed/new version: keep the format COMMANDS_VERSION = "x.y.z"
+COMMANDS_VERSION = "5.0.1"
 
 _MAX_INSTANCES = 4
 
