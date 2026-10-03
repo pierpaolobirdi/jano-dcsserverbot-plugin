@@ -55,7 +55,7 @@ With no instances yet, `/jano setup` offers a single **New instance** button. On
 
 ## Requirements
 
-- [DCSServerBot](https://github.com/Special-K-s-Flightsim-Bots/DCSServerBot) v4.x
+- [DCSServerBot](https://github.com/Special-K-s-Flightsim-Bots/DCSServerBot) v3.x
 - Python 3.11+
 - PostgreSQL 14+
 - discord.py 2.6+ (included with DCSServerBot) — modals use `discord.ui.Label`
