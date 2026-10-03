@@ -11,12 +11,16 @@ if exist "%SCRIPT_DIR%plugins\jano\commands.py" for /f "tokens=3" %%V in ('finds
 :: -- Colors (ANSI escape codes, Windows 10/11 only; left empty on older systems) -
 set "NEWC="
 set "OLDC="
+set "OKC="
+set "ERRC="
 set "OFF="
 ver | findstr /C:" 10." > nul
 if !ERRORLEVEL! == 0 (
     for /f %%E in ('echo prompt $E ^| cmd') do set "ESC=%%E"
     set "NEWC=!ESC![1;92m"
     set "OLDC=!ESC![31m"
+    set "OKC=!ESC![94m"
+    set "ERRC=!ESC![91m"
     set "OFF=!ESC![0m"
 )
 
@@ -54,7 +58,7 @@ if "!DCSSB_PATH!"=="" (
 
 if not exist "!DCSSB_PATH!\config\main.yaml" (
     echo.
-    echo ERROR: DCSServerBot not found at: !DCSSB_PATH!
+    echo !ERRC!ERROR!OFF!: DCSServerBot not found at: !DCSSB_PATH!
     echo        Could not find config\main.yaml
     pause
     exit /b 1
@@ -84,14 +88,14 @@ echo [1/4] Installing tzdata (Windows timezone data)...
 if exist "%USERPROFILE%\.dcssb\Scripts\pip.exe" (
     "%USERPROFILE%\.dcssb\Scripts\pip.exe" install tzdata --quiet
     if !ERRORLEVEL! == 0 (
-        echo       OK - tzdata installed successfully.
+        echo       !OKC!OK!OFF! - tzdata installed successfully.
     ) else (
-        echo       WARNING - Could not install tzdata automatically.
+        echo       !ERRC!WARNING!OFF! - Could not install tzdata automatically.
         echo       Please run manually:
         echo       %%USERPROFILE%%\.dcssb\Scripts\pip install tzdata
     )
 ) else (
-    echo       WARNING - DCSServerBot Python environment not found at default location.
+    echo       !ERRC!WARNING!OFF! - DCSServerBot Python environment not found at default location.
     echo       Please install tzdata manually:
     echo       %%USERPROFILE%%\.dcssb\Scripts\pip install tzdata
 )
@@ -101,19 +105,34 @@ echo [2/4] Copying plugin files...
 if not exist "!DCSSB_PATH!\plugins\jano" mkdir "!DCSSB_PATH!\plugins\jano"
 if not exist "!DCSSB_PATH!\plugins\jano\db" mkdir "!DCSSB_PATH!\plugins\jano\db"
 
+set "COPY_FAIL="
 copy /Y "%SCRIPT_DIR%plugins\jano\commands.py"    "!DCSSB_PATH!\plugins\jano\commands.py"    > nul
+if errorlevel 1 set "COPY_FAIL=1"
 copy /Y "%SCRIPT_DIR%plugins\jano\__init__.py"    "!DCSSB_PATH!\plugins\jano\__init__.py"    > nul
+if errorlevel 1 set "COPY_FAIL=1"
 copy /Y "%SCRIPT_DIR%plugins\jano\listener.py"    "!DCSSB_PATH!\plugins\jano\listener.py"    > nul
+if errorlevel 1 set "COPY_FAIL=1"
 copy /Y "%SCRIPT_DIR%plugins\jano\version.py"     "!DCSSB_PATH!\plugins\jano\version.py"     > nul
+if errorlevel 1 set "COPY_FAIL=1"
 copy /Y "%SCRIPT_DIR%plugins\jano\db\tables.sql"  "!DCSSB_PATH!\plugins\jano\db\tables.sql"  > nul
-echo       OK - Plugin files copied.
+if errorlevel 1 set "COPY_FAIL=1"
+if defined COPY_FAIL (
+    echo       !ERRC!FAILED!OFF! - Some plugin files could not be copied. Check the folder permissions and run the installer again.
+) else (
+    echo       !OKC!OK!OFF! - Plugin files copied.
+)
 
 :: ── Copy config file (only if it doesn't exist) ───────────────────────────────
 echo [3/4] Copying configuration file...
 if not exist "!DCSSB_PATH!\config\plugins\jano.yaml" (
     if not exist "!DCSSB_PATH!\config\plugins" mkdir "!DCSSB_PATH!\config\plugins"
     copy /Y "%SCRIPT_DIR%config\plugins\jano.yaml" "!DCSSB_PATH!\config\plugins\jano.yaml" > nul
-    echo       OK - jano.yaml created. Edit it to configure your roles and timezone.
+    if errorlevel 1 (
+        set "COPY_FAIL=1"
+        echo       !ERRC!FAILED!OFF! - Could not create jano.yaml. Check the folder permissions and run the installer again.
+    ) else (
+        echo       !OKC!OK!OFF! - jano.yaml created. Edit it to configure your roles and timezone.
+    )
 ) else (
     echo       SKIPPED - jano.yaml already exists, not overwritten.
     echo       Your existing configuration has been preserved.
@@ -123,9 +142,9 @@ if not exist "!DCSSB_PATH!\config\plugins\jano.yaml" (
 echo [4/4] Checking main.yaml...
 findstr /C:"- jano" "!DCSSB_PATH!\config\main.yaml" > nul 2>&1
 if !ERRORLEVEL! == 0 (
-    echo       OK - jano already listed in main.yaml.
+    echo       !OKC!OK!OFF! - jano already listed in main.yaml.
 ) else (
-    echo       ACTION REQUIRED - Add the following to your config\main.yaml:
+    echo       !ERRC!ACTION REQUIRED!OFF! - Add the following to your config\main.yaml:
     echo.
     echo           opt_plugins:
     echo             - jano
@@ -135,7 +154,11 @@ if !ERRORLEVEL! == 0 (
 :: ── Done ─────────────────────────────────────────────────────────────────────
 echo.
 echo ====================================================
-echo  !NEWC!Installation complete^^!!OFF! Jano !NEWC!Ver. !NEW_VER!!OFF!
+if defined COPY_FAIL (
+    echo  !ERRC!Installation FAILED!OFF! - see the messages above. Jano !NEWC!Ver. !NEW_VER!!OFF! was not fully installed.
+) else (
+    echo  !NEWC!Installation complete^^!!OFF! Jano !NEWC!Ver. !NEW_VER!!OFF!
+)
 echo ====================================================
 echo.
 echo Next steps:
