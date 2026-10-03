@@ -48,10 +48,29 @@ for %%P in (
     )
 )
 
+set "SHOWN="
+
+:: A detected path is shown together with the installed/new version BEFORE asking to confirm it
 if not "!DCSSB_PATH!"=="" (
     echo Detected DCSServerBot at: !DCSSB_PATH!
+    set "OLD_VER="
+    set "OLD_FILE=!DCSSB_PATH!\plugins\jano\commands.py"
+    if exist "!OLD_FILE!" (
+        set "OLD_VER=unknown (no version in the installed file)"
+        for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "!OLD_FILE!"') do set "OLD_VER=%%~V"
+    )
+    echo Installing Jano !NEWC!Ver. !NEW_VER!!OFF! to: !DCSSB_PATH!
+    if not defined OLD_VER (
+        echo Installed now: none ^(new install^)
+    ) else if "!OLD_VER!"=="!NEW_VER!" (
+        echo Installed now: !NEWC!Ver. !NEW_VER!!OFF! ^(same version - files will be refreshed^)
+    ) else (
+        echo Installed now: !OLDC!Ver. !OLD_VER!!OFF! --^> updating to !NEWC!Ver. !NEW_VER!!OFF!
+    )
+    set "SHOWN=1"
     set /p CONFIRM="Is this correct? (Y/N): "
     if /i "!CONFIRM!"=="N" set "DCSSB_PATH="
+    if /i "!CONFIRM!"=="N" set "SHOWN="
 )
 
 if "!DCSSB_PATH!"=="" (
@@ -66,22 +85,22 @@ if not exist "!DCSSB_PATH!\config\main.yaml" (
     exit /b 1
 )
 
-:: -- Version already installed (if any) ------------------------------------------
-set "OLD_VER="
-set "OLD_FILE=!DCSSB_PATH!\plugins\jano\commands.py"
-if exist "!OLD_FILE!" (
-    set "OLD_VER=unknown (no version in the installed file)"
-    for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "!OLD_FILE!"') do set "OLD_VER=%%~V"
-)
-
-echo.
-echo Installing Jano !NEWC!Ver. !NEW_VER!!OFF! to: !DCSSB_PATH!
-if not defined OLD_VER (
-    echo Installed now: none ^(new install^)
-) else if "!OLD_VER!"=="!NEW_VER!" (
-    echo Installed now: !NEWC!Ver. !NEW_VER!!OFF! ^(same version - files will be refreshed^)
-) else (
-    echo Installed now: !OLDC!Ver. !OLD_VER!!OFF! --^> updating to !NEWC!Ver. !NEW_VER!!OFF!
+:: A path typed by hand is shown with the versions right after it is validated
+if not defined SHOWN (
+    set "OLD_VER="
+    set "OLD_FILE=!DCSSB_PATH!\plugins\jano\commands.py"
+    if exist "!OLD_FILE!" (
+        set "OLD_VER=unknown (no version in the installed file)"
+        for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "!OLD_FILE!"') do set "OLD_VER=%%~V"
+    )
+    echo Installing Jano !NEWC!Ver. !NEW_VER!!OFF! to: !DCSSB_PATH!
+    if not defined OLD_VER (
+        echo Installed now: none ^(new install^)
+    ) else if "!OLD_VER!"=="!NEW_VER!" (
+        echo Installed now: !NEWC!Ver. !NEW_VER!!OFF! ^(same version - files will be refreshed^)
+    ) else (
+        echo Installed now: !OLDC!Ver. !OLD_VER!!OFF! --^> updating to !NEWC!Ver. !NEW_VER!!OFF!
+    )
 )
 echo.
 
