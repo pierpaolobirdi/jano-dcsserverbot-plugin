@@ -27,8 +27,9 @@ All commands use the `/jano` prefix:
 | `/jano setup` | Create, edit and delete instances; set command roles per instance |
 | `/jano status` | Show current status, schedule and config of an instance |
 | `/jano comms` | Open, close or resume the automatic schedule |
+| `/jano upgrade` | Admins only: update Jano from GitHub, from Discord |
 
-All commands take an optional `instance` argument (auto-selected when only one exists).
+`/jano setup`, `/jano status` and `/jano comms` take an optional `instance` argument (auto-selected when only one exists).
 
 ### `/jano comms`
 - `action` is chosen from a dropdown: `open`, `close` or `resume`
@@ -50,6 +51,25 @@ Opens the setup menu of an instance:
 | 🗑️ Delete instance | Delete an instance after typing `DELETE`; its opening announcement is removed too |
 
 With no instances yet, `/jano setup` offers a single **New instance** button. Only users with a global command role can use `/jano setup`.
+
+### `/jano upgrade`
+Checks GitHub for a newer version of Jano and offers to install it. It needs the `Admin` role of DCSServerBot, replies privately, and only the admin who ran it can press the buttons. It is not an automatic updater: nothing happens unless an admin runs the command and confirms.
+
+1. The reply shows the installed version and what is newer, with the release notes: the latest **release**, and the **development branch** when its version is higher. A **pre-release** is marked with a warning. Running the command and pressing **Cancel** is the way to just check.
+2. Buttons: **Update to release**, **Update to development branch**, **Cancel** (or let it expire after two minutes). A button is disabled when there is nothing newer on that side.
+3. The development branch is work in progress and may contain errors, so choosing it first shows a **warning of the risk**, and nothing is installed until you press **Accept the risk and update**.
+4. When the update finishes you are told it worked and asked whether to **restart DCSServerBot now** or **later**. If you restart, the message updates by itself once DCSServerBot is back, confirming which version is running, and then disappears. The new version only takes effect after a restart: choosing *Later* leaves it installed and active at the next restart.
+
+Safety:
+- It downloads only from this plugin's GitHub repository, over HTTPS (a release's zip, or the development branch's).
+- Only the plugin's own files are taken from that zip (`__init__.py`, `commands.py`, `listener.py`, `version.py` and `db/tables.sql`). Each one is checked before anything is replaced: it must compile, the schema must be Jano's, and the version inside must be the one announced.
+- The previous files are kept in `plugins/jano/.backup`, and if anything fails halfway they are put back and nothing restarts.
+- Your `jano.yaml` and your database are not touched by the update itself. A changed database schema is applied by Jano when it starts, as always.
+- If DCSServerBot is configured with `restrict_commands: true`, `/jano upgrade` is blocked like the rest of its administration commands.
+- The restart is the same one as DCSServerBot's own `/node restart` on the master node. It relies on how you start the bot: launched with `run.cmd` (or `run.sh`, or a service that starts it again) it comes back by itself; launched any other way it would only stop.
+- The bot needs outbound HTTPS access to `api.github.com`.
+
+`install.cmd` stays the way to do the first installation.
 
 ---
 
@@ -204,9 +224,13 @@ The global command roles come only from `command_role_ids` in `jano.yaml`. Insta
 
 ---
 
-## Upgrading to 5.0.0
+## Updating
 
-Copy the new `plugins/jano/` files over the old ones and restart DCSServerBot. `jano.yaml` and the database need no manual changes. Things to know:
+Run `/jano upgrade` from Discord (see above), or run `install.cmd` from the new release: it shows the installed and the new version, replaces the plugin files, keeps your `jano.yaml` and tells you when a restart is needed. Either way, restart DCSServerBot afterwards.
+
+### Changes in 5.0.0
+
+Things to know when coming from an older version (`jano.yaml` and the database need no manual changes):
 
 - **discord.py 2.6+ is required** (modals use `discord.ui.Label`). Recent DCSServerBot versions already include it.
 - **`@everyone` as instance command role now really lets everyone use the commands.** Before, it was shown but ignored whenever global roles were configured, and it was lost after a restart. Check `/jano status` for instances that show "🌐 @everyone".
