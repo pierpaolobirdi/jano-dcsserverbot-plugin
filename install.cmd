@@ -6,7 +6,7 @@ set "SCRIPT_DIR=%~dp0"
 :: -- Version being installed: read from commands.py (single source of truth) ----
 :: The line in commands.py must keep this exact format:  COMMANDS_VERSION = "x.y.z"
 set "NEW_VER=unknown"
-if exist "%SCRIPT_DIR%plugins\jano\commands.py" for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "%SCRIPT_DIR%plugins\jano\commands.py"') do set "NEW_VER=%%~V"
+if exist "%SCRIPT_DIR%plugins\jano\commands.py" for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "%SCRIPT_DIR%plugins\jano\commands.py" 2^>nul') do set "NEW_VER=%%~V"
 
 :: -- Colors (ANSI escape codes, Windows 10/11 only; left empty on older systems) -
 set "NEWC="
@@ -14,6 +14,7 @@ set "OLDC="
 set "OKC="
 set "ERRC="
 set "ACTC="
+set "RSTC="
 set "OFF="
 ver | findstr /C:" 10." > nul
 if !ERRORLEVEL! == 0 (
@@ -23,6 +24,7 @@ if !ERRORLEVEL! == 0 (
     set "OKC=!ESC![94m"
     set "ERRC=!ESC![91m"
     set "ACTC=!ESC![96m"
+    set "RSTC=!ESC![93m"
     set "OFF=!ESC![0m"
 )
 
@@ -57,7 +59,7 @@ if not "!DCSSB_PATH!"=="" (
     set "OLD_FILE=!DCSSB_PATH!\plugins\jano\commands.py"
     if exist "!OLD_FILE!" (
         set "OLD_VER=unknown (no version in the installed file)"
-        for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "!OLD_FILE!"') do set "OLD_VER=%%~V"
+        for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "!OLD_FILE!" 2^>nul') do set "OLD_VER=%%~V"
     )
     echo Installing Jano !NEWC!Ver. !NEW_VER!!OFF! to: !DCSSB_PATH!
     if not defined OLD_VER (
@@ -91,7 +93,7 @@ if not defined SHOWN (
     set "OLD_FILE=!DCSSB_PATH!\plugins\jano\commands.py"
     if exist "!OLD_FILE!" (
         set "OLD_VER=unknown (no version in the installed file)"
-        for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "!OLD_FILE!"') do set "OLD_VER=%%~V"
+        for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "!OLD_FILE!" 2^>nul') do set "OLD_VER=%%~V"
     )
     echo Installing Jano !NEWC!Ver. !NEW_VER!!OFF! to: !DCSSB_PATH!
     if not defined OLD_VER (
@@ -185,10 +187,13 @@ if defined COPY_FAIL (
 endlocal
 echo ============================================================
 echo.
+if not defined COPY_FAIL echo !RSTC!RESTART REQUIRED!OFF! - Restart DCSServerBot to load !NEWC!Ver. !NEW_VER!!OFF! ^(the running bot keeps the old code until then^)
+if not defined COPY_FAIL echo.
 echo Next steps:
 echo   1. Make sure 'jano' is listed under opt_plugins in config\main.yaml
 echo   2. Edit config\plugins\jano.yaml to set your roles and timezone
 echo   3. Restart DCSServerBot
 echo   4. Use /jano setup to create your first instance
+echo   Later updates: an admin can run /jano upgrade in Discord
 echo.
 pause
