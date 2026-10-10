@@ -41,7 +41,7 @@ _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
 # install.cmd reads this line to show the installed/new version: keep the format COMMANDS_VERSION = "x.y.z"
-COMMANDS_VERSION = "5.0.7"
+COMMANDS_VERSION = "5.0.8"
 
 _MAX_INSTANCES = 4
 
@@ -1098,27 +1098,26 @@ class Jano(Plugin):
     @utils.app_has_role("Admin")
     async def jano_upgrade(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        release, dev, notes = None, None, []
-        try:
-            release = await self._upgrade_lookup()
-        except Exception as e:
-            self.log.error(f"Jano: release check failed: {e}", exc_info=not isinstance(e, UpgradeError))
-            notes.append(f"Could not check the releases: {e}")
-        try:
-            dev = await self._upgrade_lookup_dev()
-        except Exception as e:
-            self.log.error(f"Jano: development-branch check failed: {e}", exc_info=not isinstance(e, UpgradeError))
-            notes.append(f"Could not check the development branch: {e}")
-        if release and dev and dev["version"] <= release["version"]:
-            dev = None   # the release is as new (or newer) and more stable: no point in offering dev
-        if release is None and dev is None:
+        # The three sources are looked up at the same time; one that fails does not hide the others.
+        sources = (("releases", self._upgrade_lookup()),
+                   ("main branch", self._upgrade_lookup_branch("main")),
+                   ("development branch", self._upgrade_lookup_branch("dev")))
+        results = await asyncio.gather(*(lookup for _, lookup in sources), return_exceptions=True)
+        notes, offers = [], []
+        for (label, _), result in zip(sources, results):
+            if isinstance(result, Exception):
+                self.log.error(f"Jano: {label} check failed: {result}", exc_info=not isinstance(result, UpgradeError))
+                notes.append(f"Could not check the {label}: {result}")
+            offers.append(None if isinstance(result, Exception) else result)
+        release, main, dev = _pick_offers(*offers)
+        if release is None and main is None and dev is None:
             text = (f"❌ {' '.join(notes)}" if notes else
                     f"✅ You already have the newest version (Ver. {COMMANDS_VERSION}).")
             await _followup_send(interaction, JanoEmbed(description=text, color=0xE74C3C if notes else 0x2ECC71),
                                  delay=30 if notes else 10)
             return
-        view = _UpgradeView(self, interaction.user.id, release, dev)
-        view.message = await interaction.followup.send(embed=_upgrade_embed(COMMANDS_VERSION, release, dev, notes),
+        view = _UpgradeView(self, interaction.user.id, release, main, dev)
+        view.message = await interaction.followup.send(embed=_upgrade_embed(COMMANDS_VERSION, release, main, dev, notes),
                                                        view=view, ephemeral=True, wait=True)
 
     async def _http_get(self, url: str, as_json: bool = False):
@@ -1148,15 +1147,15 @@ class Jano(Plugin):
         releases = await self._http_get(f"https://api.github.com/repos/{UPGRADE_REPO}/releases?per_page=15", as_json=True)
         return _pick_release(releases, _release_version(COMMANDS_VERSION) or (0, 0, 0))
 
-    async def _upgrade_lookup_dev(self) -> dict | None:
-        """The development branch, if its version is above the installed one (None if not). The zip is
-        downloaded and checked now, so what is offered is exactly what would be installed."""
-        data = await self._http_get(f"https://api.github.com/repos/{UPGRADE_REPO}/zipball/dev")
+    async def _upgrade_lookup_branch(self, branch: str) -> dict | None:
+        """A branch of the repository ("main" or "dev"), if its version is above the installed one (None
+        if not). The zip is downloaded and checked now, so what is offered is exactly what would be installed."""
+        data = await self._http_get(f"https://api.github.com/repos/{UPGRADE_REPO}/zipball/{branch}")
         text = _zip_version(_read_release_zip(data))
         version = _release_version(text)
         if not version or version <= (_release_version(COMMANDS_VERSION) or (0, 0, 0)):
             return None
-        return {"channel": "dev", "version": version, "text": text, "tag": "dev", "prerelease": True,
+        return {"channel": branch, "version": version, "text": text, "tag": branch, "prerelease": branch == "dev",
                 "notes": "", "data": data}
 
     @staticmethod
@@ -1550,6 +1549,18 @@ def _pick_release(releases: list, current: tuple[int, int, int]) -> dict | None:
     return best
 
 
+def _pick_offers(release: dict | None, main: dict | None, dev: dict | None) -> tuple:
+    """What to offer, from the most stable source to the least: the release, then the main branch, then the
+    development branch. A source is only offered when its version is above every more stable one, so when
+    the same version is on several, the most stable one wins and the others are not shown."""
+    if release and main and main["version"] <= release["version"]:
+        main = None
+    floor = max((o["version"] for o in (release, main) if o), default=None)
+    if dev and floor and dev["version"] <= floor:
+        dev = None
+    return release, main, dev
+
+
 def _zip_version(files: dict[str, bytes]) -> str | None:
     m = re.search(rb'^COMMANDS_VERSION\s*=\s*"([^"]+)"', files[UPGRADE_PREFIX + "commands.py"], re.MULTILINE)
     return m.group(1).decode() if m else None
@@ -1641,18 +1652,25 @@ def _install_release_files(plugin_dir: str, files: dict[str, bytes]) -> list[str
     return list(changed)
 
 
-def _upgrade_embed(current_text: str, release: dict | None, dev: dict | None, notes: list[str]) -> discord.Embed:
+def _upgrade_embed(current_text: str, release: dict | None, main: dict | None, dev: dict | None,
+                   notes: list[str]) -> discord.Embed:
     embed = JanoEmbed(title="⬆️ Jano — update", description=((release or {}).get("notes", "").strip()[:900] or None),
                       color=0xF39C12 if (release or {}).get("prerelease") else 0x2ECC71)
     embed.add_field(name="Installed", value=f"Ver. {current_text}", inline=True)
     if release:
         embed.add_field(name="Release", value=f"Ver. {release['text']}" + (" ⚠️ pre-release" if release["prerelease"] else ""),
                         inline=True)
+    if main:
+        embed.add_field(name="Main branch", value=f"Ver. {main['text']}", inline=True)
     if dev:
         embed.add_field(name="Development branch", value=f"Ver. {dev['text']} ⚠️", inline=True)
     if release and release["prerelease"]:
         embed.add_field(name="⚠️ PRE-RELEASE",
                         value="This release is a pre-release: it may be unstable. Update only if you want to test it.",
+                        inline=False)
+    if main:
+        embed.add_field(name="ℹ️ MAIN BRANCH",
+                        value="The stable branch, ahead of the latest release: it has not been published as a release yet.",
                         inline=False)
     if dev:
         embed.add_field(name="⚠️ DEVELOPMENT BRANCH",
@@ -1697,12 +1715,13 @@ class _AdminOnlyView(BotView):
 
 
 class _UpgradeView(_AdminOnlyView):
-    """Update to release / Update to development / Cancel."""
+    """Update to release / main branch / development branch / Cancel."""
 
-    def __init__(self, plugin, user_id: int, release: dict | None, dev: dict | None):
+    def __init__(self, plugin, user_id: int, release: dict | None, main: dict | None, dev: dict | None):
         super().__init__(plugin, user_id)
-        self.release, self.dev = release, dev
+        self.release, self.main, self.dev = release, main, dev
         self.update_release.disabled = release is None
+        self.update_main.disabled = main is None
         self.update_dev.disabled = dev is None
 
     @discord.ui.button(label="Update to release", style=discord.ButtonStyle.success)
@@ -1710,6 +1729,12 @@ class _UpgradeView(_AdminOnlyView):
         self.stop()
         await interaction.response.edit_message(view=None)
         await self.plugin._upgrade_run(interaction, self.release)
+
+    @discord.ui.button(label="Update to main branch", style=discord.ButtonStyle.primary)
+    async def update_main(self, interaction: discord.Interaction, button):
+        self.stop()
+        await interaction.response.edit_message(view=None)
+        await self.plugin._upgrade_run(interaction, self.main)
 
     @discord.ui.button(label="Update to development branch", style=discord.ButtonStyle.danger)
     async def update_dev(self, interaction: discord.Interaction, button):

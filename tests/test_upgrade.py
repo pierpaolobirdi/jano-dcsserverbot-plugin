@@ -259,25 +259,27 @@ class _Interaction:
         self.deleted += 1
 
 
-def _plugin(tmp_path, monkeypatch, *, release=None, dev=None, downloads=None):
+def _plugin(tmp_path, monkeypatch, *, release=None, main=None, dev=None, downloads=None):
     """A plugin whose GitHub lookups and downloads are answered from memory."""
     p = make_plugin(tmp_path)
     p.downloads = []
+    answers = {"release": release, "main": main, "dev": dev}
+
+    def answer(source):
+        if isinstance(answers[source], Exception):
+            raise answers[source]
+        return answers[source]
 
     async def lookup():
-        if isinstance(release, Exception):
-            raise release
-        return release
+        return answer("release")
 
-    async def lookup_dev():
-        if isinstance(dev, Exception):
-            raise dev
-        return dev
+    async def lookup_branch(branch):
+        return answer(branch)
 
     async def http_get(url, as_json=False):
         p.downloads.append(url)
         return (downloads or {})[url]
-    p._upgrade_lookup, p._upgrade_lookup_dev, p._http_get = lookup, lookup_dev, http_get
+    p._upgrade_lookup, p._upgrade_lookup_branch, p._http_get = lookup, lookup_branch, http_get
     return p
 
 
@@ -570,3 +572,85 @@ def test_no_jano_yaml_means_no_migration(tmp_path, monkeypatch, sleeps):
     p = make_plugin(tmp_path)
     p.node = types.SimpleNamespace(config_dir=str(tmp_path / "nothing_here"))
     assert p._run_migration(REAL_MIGRATOR.encode()) == ""
+
+
+# ── the main branch as a third source ───────────────────────────────────────────────
+
+def _main_offer(version="9.9.9", data=None):
+    return {"channel": "main", "version": commands._release_version(version), "text": version, "tag": "main",
+            "prerelease": False, "notes": "", "data": data if data is not None else _zip(version)}
+
+
+def test_the_most_stable_source_wins_when_versions_tie():
+    rel, main, dev = _offer("9.9.9"), _main_offer("9.9.9"), _dev_offer("9.9.9")
+    assert commands._pick_offers(rel, main, dev) == (rel, None, None)                 # same everywhere: only the release
+    assert commands._pick_offers(None, main, dev) == (None, main, None)               # no release: main beats dev
+
+
+def test_each_source_is_offered_only_above_the_more_stable_ones():
+    rel, main, dev = _offer("9.9.9"), _main_offer("9.9.10"), _dev_offer("9.9.11")
+    assert [o and o["text"] for o in commands._pick_offers(rel, main, dev)] == ["9.9.9", "9.9.10", "9.9.11"]
+    assert [o and o["text"] for o in commands._pick_offers(rel, _main_offer("9.9.9"), dev)] == ["9.9.9", None, "9.9.11"]
+    assert [o and o["text"] for o in commands._pick_offers(rel, main, _dev_offer("9.9.10"))] == ["9.9.9", "9.9.10", None]
+    assert [o and o["text"] for o in commands._pick_offers(None, main, _dev_offer("9.9.10"))] == [None, "9.9.10", None]
+    assert [o and o["text"] for o in commands._pick_offers(None, None, dev)] == [None, None, "9.9.11"]
+    assert commands._pick_offers(None, None, None) == (None, None, None)
+
+
+def test_three_sources_give_three_enabled_buttons(tmp_path, monkeypatch, sleeps):
+    p = _plugin(tmp_path, monkeypatch, release=_offer("9.9.9"), main=_main_offer("9.9.10"), dev=_dev_offer("9.9.11"))
+    it = _Interaction()
+    asyncio.run(commands.Jano.jano_upgrade.callback(p, it))
+    view = it.followup.sent[0]["view"]
+    assert [b.label for b in view.children] == ["Update to release", "Update to main branch",
+                                                "Update to development branch", "Cancel"]
+    assert not view.update_release.disabled and not view.update_main.disabled and not view.update_dev.disabled
+    fields = {f.name: f.value for f in it.followup.sent[0]["embed"].fields}
+    assert fields["Release"] == "Ver. 9.9.9" and fields["Main branch"] == "Ver. 9.9.10"
+    assert fields["Development branch"].startswith("Ver. 9.9.11")
+
+
+def test_only_main_newer_gives_only_the_main_button(tmp_path, monkeypatch, sleeps):
+    p = _plugin(tmp_path, monkeypatch, main=_main_offer("9.9.10"))
+    it = _Interaction()
+    asyncio.run(commands.Jano.jano_upgrade.callback(p, it))
+    view = it.followup.sent[0]["view"]
+    assert (view.update_release.disabled, view.update_main.disabled, view.update_dev.disabled) == (True, False, True)
+
+
+def test_the_main_branch_installs_what_was_offered_without_a_risk_warning(tmp_path, monkeypatch, sleeps):
+    p = _plugin(tmp_path, monkeypatch, main=_main_offer("9.9.10"))
+    it = _Interaction()
+
+    async def go():
+        await commands.Jano.jano_upgrade.callback(p, it)
+        await it.followup.sent[0]["view"].update_main.callback(it)
+    asyncio.run(go())
+    assert (tmp_path / "commands.py").read_text().startswith('COMMANDS_VERSION = "9.9.10"')
+    assert p.downloads == [] and it.original[-1]["view"].children[0].label == "Restart now"
+
+
+def test_a_failing_source_does_not_hide_the_others(tmp_path, monkeypatch, sleeps):
+    err = commands.UpgradeError("GitHub answered 404.")
+    p = _plugin(tmp_path, monkeypatch, release=err, main=_main_offer("9.9.10"), dev=err)
+    it = _Interaction()
+    asyncio.run(commands.Jano.jano_upgrade.callback(p, it))
+    sent = it.followup.sent[0]
+    assert not sent["view"].update_main.disabled and sent["view"].update_release.disabled
+    notes = " ".join(f.value for f in sent["embed"].fields if f.name == "ℹ️")
+    assert "releases" in notes and "development branch" in notes and "main branch" not in notes
+
+
+def test_a_branch_lookup_asks_for_that_branchs_zip_and_compares_versions(tmp_path, monkeypatch):
+    p = make_plugin(tmp_path)
+    asked = []
+
+    async def http_get(url, as_json=False):
+        asked.append(url)
+        return _zip("9.9.9" if url.endswith("/main") else "1.0.0")
+    p._http_get = http_get
+    main = asyncio.run(p._upgrade_lookup_branch("main"))
+    assert asked[0].endswith("/repos/pierpaolobirdi/jano-dcsserverbot-plugin/zipball/main")
+    assert main["channel"] == "main" and main["text"] == "9.9.9" and main["prerelease"] is False and main["data"]
+    assert asyncio.run(p._upgrade_lookup_branch("dev")) is None                       # 1.0.0 is below the installed version
+    assert asked[1].endswith("/zipball/dev")
