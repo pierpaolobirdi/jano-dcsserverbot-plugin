@@ -41,7 +41,7 @@ _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
 # install.cmd reads this line to show the installed/new version: keep the format COMMANDS_VERSION = "x.y.z"
-COMMANDS_VERSION = "5.0.8"
+COMMANDS_VERSION = "5.0.9"
 
 _MAX_INSTANCES = 4
 
@@ -1202,7 +1202,8 @@ class Jano(Plugin):
             files = _read_release_zip(data, release["text"])
             await say("📦 Installing...")
             changed = await asyncio.to_thread(_install_release_files, self._plugin_dir(), files)
-            note = await asyncio.to_thread(self._run_migration, files["migrate_config.py"])
+            script = files.get("migrate_config.py")
+            note = await asyncio.to_thread(self._run_migration, script) if script else ""
         except UpgradeError as e:
             await say(f"❌ Update stopped: {e}", color=0xE74C3C)
             _spawn(_later(30, interaction.delete_original_response))
@@ -1509,6 +1510,7 @@ UPGRADE_REPO = "pierpaolobirdi/jano-dcsserverbot-plugin"
 UPGRADE_PREFIX = "plugins/jano/"
 UPGRADE_FILES = ("plugins/jano/__init__.py", "plugins/jano/commands.py", "plugins/jano/listener.py",
                  "plugins/jano/version.py", "plugins/jano/db/tables.sql", "migrate_config.py")
+UPGRADE_OPTIONAL = ("migrate_config.py",)            # absent from versions older than 5.0.7
 UPGRADE_MAX_BYTES = 25 * 1024 * 1024
 
 
@@ -1583,6 +1585,8 @@ def _read_release_zip(data: bytes, version_text: str | None = None) -> dict[str,
     files = {}
     for name in UPGRADE_FILES:
         if top + name not in entries:
+            if name in UPGRADE_OPTIONAL:
+                continue
             raise UpgradeError(f"The release does not contain {name}.")
         files[name] = zf.read(top + name)
     for name, content in files.items():

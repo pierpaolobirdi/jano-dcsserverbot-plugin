@@ -654,3 +654,10 @@ def test_a_branch_lookup_asks_for_that_branchs_zip_and_compares_versions(tmp_pat
     assert main["channel"] == "main" and main["text"] == "9.9.9" and main["prerelease"] is False and main["data"]
     assert asyncio.run(p._upgrade_lookup_branch("dev")) is None                       # 1.0.0 is below the installed version
     assert asked[1].endswith("/zipball/dev")
+
+
+def test_zip_without_migrator_is_accepted():
+    """Versions older than 5.0.7 (e.g. an old main branch) have no migrate_config.py."""
+    files = commands._read_release_zip(_zip(drop=["migrate_config.py"]), "9.9.9")
+    assert "migrate_config.py" not in files
+    assert "plugins/jano/commands.py" in files
