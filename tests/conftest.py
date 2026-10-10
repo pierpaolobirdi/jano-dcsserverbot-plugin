@@ -13,7 +13,7 @@ import types
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path[:0] = [os.path.join(ROOT, "tests", "stubs"), os.path.join(ROOT, "plugins")]
+sys.path[:0] = [os.path.join(ROOT, "tests", "stubs"), os.path.join(ROOT, "plugins"), ROOT]
 
 from jano import commands  # noqa: E402
 
@@ -28,6 +28,7 @@ def make_plugin(plugin_dir=None, **attrs):
     async def restart():
         p.restarts.append(True)
     p.bot = types.SimpleNamespace(node=types.SimpleNamespace(restart=restart))
+    p.node = types.SimpleNamespace(config_dir=os.path.join(str(plugin_dir or "."), "no_bot_config"))   # no jano.yaml there
     for k, v in attrs.items():
         setattr(p, k, v)
     if plugin_dir is not None:

@@ -516,3 +516,57 @@ def test_if_both_ways_fail_it_is_logged_as_a_warning(tmp_path, sleeps, caplog):
 
 def test_the_upgrade_command_is_registered_in_the_jano_group():
     assert {c.name for c in commands.Jano.jano_group.commands} >= {"status", "comms", "setup", "upgrade"}
+
+
+# ── the configuration migration that goes with an update ────────────────────────────
+
+REAL_MIGRATOR = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "migrate_config.py"),
+                     encoding="utf-8").read()
+
+
+def _with_config(tmp_path, monkeypatch, yaml_text, migrator=REAL_MIGRATOR):
+    """A plugin set up for a release update whose zip carries `migrator`, with jano.yaml holding `yaml_text`."""
+    cfg_dir = tmp_path / "bot_config"
+    (cfg_dir / "plugins").mkdir(parents=True)
+    (cfg_dir / "plugins" / "jano.yaml").write_text(yaml_text)
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+    p = _plugin(plugin_dir, monkeypatch, release=_offer("9.9.9"),
+                downloads={"https://api.github.com/zip/9.9.9": _zip("9.9.9", extra={"migrate_config.py": migrator})})
+    p.node = types.SimpleNamespace(config_dir=str(cfg_dir))
+    return p, cfg_dir / "plugins" / "jano.yaml", plugin_dir
+
+
+def _update(p, sleeps):
+    it = _Interaction()
+
+    async def go():
+        await commands.Jano.jano_upgrade.callback(p, it)
+        await it.followup.sent[0]["view"].update_release.callback(it)
+        await sleeps.drain()
+    asyncio.run(go())
+    return it
+
+
+def test_the_update_migrates_jano_yaml_and_does_not_install_the_migrator(tmp_path, monkeypatch, sleeps):
+    p, yaml_path, plugin_dir = _with_config(tmp_path, monkeypatch, "DEFAULT:\n  command_role_ids: []\n")
+    it = _update(p, sleeps)
+    assert "timezone" in yaml_path.read_text() and (yaml_path.parent / "jano.yaml.bak").exists()
+    assert not (plugin_dir / "migrate_config.py").exists()
+    assert (plugin_dir / "commands.py").exists() and "⚠️" not in it.original[-1]["embed"].description
+
+
+def test_a_failing_migration_is_reported_but_the_update_still_counts(tmp_path, monkeypatch, sleeps):
+    p, yaml_path, plugin_dir = _with_config(tmp_path, monkeypatch, "DEFAULT:\n  command_role_ids: []\n",
+                                            migrator="import sys\nsys.exit(1)\n")
+    it = _update(p, sleeps)
+    assert yaml_path.read_text() == "DEFAULT:\n  command_role_ids: []\n"
+    assert (plugin_dir / "commands.py").exists()
+    assert "migration reported an error" in it.original[-1]["embed"].description
+    assert it.original[-1]["view"].children[0].label == "Restart now"
+
+
+def test_no_jano_yaml_means_no_migration(tmp_path, monkeypatch, sleeps):
+    p = make_plugin(tmp_path)
+    p.node = types.SimpleNamespace(config_dir=str(tmp_path / "nothing_here"))
+    assert p._run_migration(REAL_MIGRATOR.encode()) == ""

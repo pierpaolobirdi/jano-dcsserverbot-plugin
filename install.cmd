@@ -159,6 +159,25 @@ if not exist "!DCSSB_PATH!\config\plugins\jano.yaml" (
 ) else (
     echo       SKIPPED - jano.yaml already exists, not overwritten.
     echo       Your existing configuration has been preserved.
+    rem Add any variable the new version needs (your values and comments are kept)
+    set "PYTHON_EXE="
+    if exist "%USERPROFILE%\.dcssb\Scripts\python.exe" set "PYTHON_EXE=%USERPROFILE%\.dcssb\Scripts\python.exe"
+    if "!PYTHON_EXE!"=="" (
+        where python >nul 2>&1
+        if !ERRORLEVEL! == 0 set "PYTHON_EXE=python"
+    )
+    if "!PYTHON_EXE!"=="" (
+        echo       !ERRC!WARNING!OFF! - Python not found: new variables could not be checked.
+        echo       Your existing configuration has been left unchanged.
+    ) else (
+        "!PYTHON_EXE!" "%SCRIPT_DIR%migrate_config.py" "!DCSSB_PATH!\config\plugins\jano.yaml"
+        if !ERRORLEVEL! == 0 (
+            echo       !OKC!OK!OFF! - Configuration checked.
+        ) else (
+            echo       !ERRC!WARNING!OFF! - The configuration migration reported an error.
+            echo       Your existing configuration has been left unchanged.
+        )
+    )
 )
 
 :: ── Check main.yaml for jano entry ───────────────────────────────────────────

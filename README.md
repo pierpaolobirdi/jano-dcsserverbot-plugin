@@ -96,8 +96,9 @@ Safety:
    - Install `tzdata` (Windows timezone data) into the DCSServerBot Python environment
    - Add `tzdata` to `requirements.local` so it is reinstalled automatically on every DCSServerBot update
    - Copy all plugin files to the correct locations
-   - Preserve your existing `jano.yaml` if it already exists
+   - Preserve your existing `jano.yaml` if it already exists, adding only the variables the new version needs (your values and comments stay; the previous file is kept as `jano.yaml.bak` when something changes). This step needs Python, the one of DCSServerBot or the system's
    - Warn you if `jano` is missing from `main.yaml`
+   - Tell you when DCSServerBot has to be restarted to load the new version
 
 ### Option 2 — Manual installation
 
@@ -227,6 +228,8 @@ The global command roles come only from `command_role_ids` in `jano.yaml`. Insta
 ## Updating
 
 Run `/jano upgrade` from Discord (see above), or run `install.cmd` from the new release: it shows the installed and the new version, replaces the plugin files, keeps your `jano.yaml` and tells you when a restart is needed. Either way, restart DCSServerBot afterwards.
+
+Both also run `migrate_config.py` on your `jano.yaml`: it adds any variable the new version needs (with its default value), renames or removes variables that changed, and leaves everything else exactly as you wrote it. If it changes the file, the previous one is kept as `jano.yaml.bak`. You can run it by hand with `python migrate_config.py path\to\jano.yaml`.
 
 ### Changes in 5.0.0
 

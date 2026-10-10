@@ -14,6 +14,9 @@ import math
 import os
 import re
 import shutil
+import subprocess
+import sys
+import tempfile
 import time
 import zipfile
 from dataclasses import dataclass, field
@@ -38,7 +41,7 @@ _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
 # install.cmd reads this line to show the installed/new version: keep the format COMMANDS_VERSION = "x.y.z"
-COMMANDS_VERSION = "5.0.6"
+COMMANDS_VERSION = "5.0.7"
 
 _MAX_INSTANCES = 4
 
@@ -1160,6 +1163,26 @@ class Jano(Plugin):
     def _plugin_dir() -> str:
         return os.path.dirname(os.path.abspath(__file__))
 
+    def _run_migration(self, migrate_source: bytes) -> str:
+        """Run the release's migrate_config.py on this installation's jano.yaml. Returns "" when fine,
+        else a short note (the file is then left as it was)."""
+        yaml_path = os.path.join(self.node.config_dir, "plugins", "jano.yaml")
+        if not os.path.exists(yaml_path):
+            return ""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = os.path.join(tmp, "migrate_config.py")
+            with open(script, "wb") as f:
+                f.write(migrate_source)
+            try:
+                res = subprocess.run([sys.executable, "-I", script, yaml_path], capture_output=True, text=True,
+                                     timeout=120)
+            except Exception as e:
+                return f"configuration migration could not run ({e})"
+        if res.returncode != 0:
+            self.log.warning(f"Jano: configuration migration failed: {res.stdout.strip()} {res.stderr.strip()}")
+            return "configuration migration reported an error (your file is unchanged)"
+        return ""
+
     async def _upgrade_run(self, interaction: discord.Interaction, release: dict) -> None:
         """Download (or take the checked dev zip), install, telling the admin each step, then ask whether
         to restart. Any failure leaves the previous files in place."""
@@ -1180,6 +1203,7 @@ class Jano(Plugin):
             files = _read_release_zip(data, release["text"])
             await say("📦 Installing...")
             changed = await asyncio.to_thread(_install_release_files, self._plugin_dir(), files)
+            note = await asyncio.to_thread(self._run_migration, files["migrate_config.py"])
         except UpgradeError as e:
             await say(f"❌ Update stopped: {e}", color=0xE74C3C)
             _spawn(_later(30, interaction.delete_original_response))
@@ -1196,7 +1220,8 @@ class Jano(Plugin):
         view = _RestartView(self, interaction.user.id, release["text"])
         view.message = await interaction.original_response()
         await say(f"✅ Updated to Ver. {release['text']} ({len(changed)} file(s) replaced; the old ones are kept in "
-                  f"`plugins/jano/.backup`).\nDo you want to restart DCSServerBot now so the update takes effect?",
+                  f"`plugins/jano/.backup`)." + (f" ⚠️ {note}." if note else "")
+                  + "\nDo you want to restart DCSServerBot now so the update takes effect?",
                   view=view, color=0x2ECC71)
 
     # The notice that closes a restart: the new process finishes what the old one started.
@@ -1484,7 +1509,7 @@ class ViewResumeAuto(BotView):
 UPGRADE_REPO = "pierpaolobirdi/jano-dcsserverbot-plugin"
 UPGRADE_PREFIX = "plugins/jano/"
 UPGRADE_FILES = ("plugins/jano/__init__.py", "plugins/jano/commands.py", "plugins/jano/listener.py",
-                 "plugins/jano/version.py", "plugins/jano/db/tables.sql")
+                 "plugins/jano/version.py", "plugins/jano/db/tables.sql", "migrate_config.py")
 UPGRADE_MAX_BYTES = 25 * 1024 * 1024
 
 
@@ -1573,6 +1598,8 @@ def _install_release_files(plugin_dir: str, files: dict[str, bytes]) -> list[str
 
     old, changed = {}, {}
     for name, content in files.items():
+        if not name.startswith(UPGRADE_PREFIX):
+            continue                                 # migrate_config.py is run from a temporary folder, not installed
         rel = name[len(UPGRADE_PREFIX):]
         current = None
         if os.path.exists(path_of(rel)):
