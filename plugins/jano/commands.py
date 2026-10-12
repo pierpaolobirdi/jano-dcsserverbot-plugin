@@ -44,11 +44,12 @@ _DEFAULT_TZ = "Europe/Madrid"
 # The release shown in the footer is PLUGIN_RELEASE (version.py), updated manually. DCSServerBot
 # reads only __version__ there, not this one.
 #
-# Bridge line, to be removed in the release after 5.1.1: a plugin older than 5.1.1 checks a
-# downloaded release by reading this exact line in commands.py, so it must stay for them to
-# be able to update to 5.1.1. Nothing in the code uses it (a test keeps it equal to
-# PLUGIN_RELEASE).
-COMMANDS_VERSION = "5.1.1"
+# Bridge line, KEEP IT: a plugin older than 5.1.1 checks a downloaded release by reading this
+# exact line (and name) in commands.py, so every release must carry it, equal to PLUGIN_RELEASE,
+# for those installations to be able to update straight to it. Nothing in the code uses it (a
+# test keeps it equal to PLUGIN_RELEASE). It can only go once no installation older than 5.1.1
+# is expected to use /jano upgrade.
+COMMANDS_VERSION = "5.1.2"
 
 _MAX_INSTANCES = 4
 

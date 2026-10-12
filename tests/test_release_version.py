@@ -78,7 +78,7 @@ def test_install_cmd_reads_the_release_from_version_py():
 # ── the bridge: a plugin older than 5.1.1 must still be able to update to this one ──────────
 
 def test_bridge_line_equals_the_release():
-    """Remove this test, together with the COMMANDS_VERSION line, in the release after 5.1.1."""
+    """Keep it while installations older than 5.1.1 may update straight to a newer release."""
     assert commands.COMMANDS_VERSION == commands.PLUGIN_RELEASE
 
 
@@ -99,7 +99,7 @@ def test_the_release_check_reads_version_py_and_ignores_commands_py():
     def drop_bridge(files):
         files["plugins/jano/commands.py"] = re.sub(r'(?m)^COMMANDS_VERSION = .*\n', "",
                                                    files["plugins/jano/commands.py"])
-    assert commands._read_release_zip(_repo_zip(drop_bridge), commands.PLUGIN_RELEASE)     # the release after 5.1.1
+    assert commands._read_release_zip(_repo_zip(drop_bridge), commands.PLUGIN_RELEASE)     # a future release without the bridge line
 
 
 def test_a_release_that_announces_another_version_is_refused():
@@ -115,3 +115,41 @@ def test_a_release_with_the_version_only_in_commands_py_is_refused():
         files["plugins/jano/version.py"] = '__version__ = "1.0"\n'
     with pytest.raises(commands.UpgradeError, match="does not match its tag"):
         commands._read_release_zip(_repo_zip(old_layout), commands.PLUGIN_RELEASE)
+
+
+# ── a straight jump from an installation older than the bridge (5.1.1) ─────────────────────
+# Their /jano upgrade is code already installed, so we cannot change it. It accepts a release
+# only if the release carries the bridge line (tests above) AND every file of its own list, and
+# it copies only the files of that list.
+OLD_UPGRADE_FILES = (
+    "plugins/jano/__init__.py",
+    "plugins/jano/commands.py",
+    "plugins/jano/listener.py",
+    "plugins/jano/version.py",
+    "plugins/jano/db/tables.sql",
+    "plugins/jano/schemas/jano_schema.yaml",
+    "migrate_config.py",
+)
+# Files added after 5.1.1 that migrate_config.py puts in place itself (an older upgrade does
+# run the new release's migrate_config.py). Empty today; add a file here only if it is.
+DELIVERED_BY_MIGRATE_CONFIG: set = set()
+
+
+def test_a_release_still_has_every_file_an_older_upgrade_expects():
+    for name in OLD_UPGRADE_FILES:
+        assert os.path.isfile(os.path.join(ROOT, *name.split("/"))), f"{name} is missing: older upgrades refuse the release"
+    assert set(OLD_UPGRADE_FILES) <= set(commands.UPGRADE_FILES)
+
+
+def test_no_new_file_that_an_older_upgrade_would_not_copy():
+    plugin = os.path.join(ROOT, "plugins", "jano")
+    present = set()
+    for folder, dirs, names in os.walk(plugin):
+        dirs[:] = [d for d in dirs if not d.startswith((".", "__"))]
+        for n in names:
+            if not n.startswith("."):
+                rel = os.path.relpath(os.path.join(folder, n), ROOT).replace(os.sep, "/")
+                present.add(rel)
+    unknown = present - set(OLD_UPGRADE_FILES) - DELIVERED_BY_MIGRATE_CONFIG
+    assert not unknown, (f"{sorted(unknown)}: an installation older than 5.1.1 would not receive "
+                         "them when updating straight to this release (see DELIVERED_BY_MIGRATE_CONFIG)")

@@ -262,7 +262,7 @@ The release number is `PLUGIN_RELEASE` in `plugins/jano/version.py`, and nowhere
 
 `__version__`, in the same file, is **not** the release. DCSServerBot's core reads it as the plugin's database-schema version (it expects `major.minor`, runs `db/update_v<x>.sql` for each step and logs `migrated to version ...` whenever it changes). Jano's own migrations run from `commands.py` at startup, so it stays at `1.0`.
 
-`commands.py` still carries one `COMMANDS_VERSION = "x.y.z"` line. It is a bridge for installations older than 5.1.1, whose `/jano upgrade` looks for it to accept a downloaded release. The code does not use it and a test keeps it equal to `PLUGIN_RELEASE` (so bump both until it goes); it is removed in the release after 5.1.1.
+`commands.py` still carries one `COMMANDS_VERSION = "x.y.z"` line. It is a bridge for installations older than 5.1.1, whose `/jano upgrade` accepts a downloaded release only if it finds that line. The code does not use it and a test keeps it equal to `PLUGIN_RELEASE` (so bump both). **Keep it in every release**: without it an installation older than 5.1.1 refuses to jump straight to the new release. For the same reason a file that did not exist in 5.1.1 is not copied by those older upgrades: every file under `plugins/jano/` must be in the list of that version (a test checks it) or be put in place by `migrate_config.py`, which the older upgrade does run from the new release.
 
 The tests need `pip install pytest discord.py "psycopg[binary]" aiohttp pyyaml` and run with `python -m pytest tests`.
 
