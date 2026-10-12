@@ -7,9 +7,18 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import io
+import json
 import logging
 import math
+import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Type
@@ -20,7 +29,7 @@ from discord import app_commands
 from discord.ext import tasks
 
 import psycopg.rows
-from core import Group, Plugin, TEventListener
+from core import Group, Plugin, TEventListener, utils
 from services.bot import DCSServerBot
 
 log = logging.getLogger(__name__)
@@ -31,7 +40,8 @@ log = logging.getLogger(__name__)
 _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
-COMMANDS_VERSION = "5.0.0"
+# install.cmd reads this line to show the installed/new version: keep the format COMMANDS_VERSION = "x.y.z"
+COMMANDS_VERSION = "5.1.0"
 
 _MAX_INSTANCES = 4
 
@@ -401,6 +411,8 @@ class Jano(Plugin):
         self.tz: ZoneInfo = ZoneInfo(_DEFAULT_TZ)
         # Open-channel announcement template — set in cog_load from jano.yaml
         self._open_message_template: dict = {}
+        # True while /jano upgrade is downloading/installing (only one at a time)
+        self._upgrading: bool = False
 
     # ── Plugin lifecycle ───────────────────────────────────────────────────
 
@@ -448,6 +460,7 @@ class Jano(Plugin):
         if not self.scheduler.is_running():
             self.scheduler.start()
         self.log.debug(f"Ready - {len(self.states)} instance(s) loaded.")
+        await self._finish_restart_notice()
 
     def _resolve_yaml_roles(self, guild: discord.Guild):
         """Resolve role names or numeric IDs from jano.yaml into the global command role IDs.
@@ -1078,6 +1091,196 @@ class Jano(Plugin):
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         view.message = await interaction.original_response()
 
+    # ── /jano upgrade ─────────────────────────────────────────────────────
+
+    @jano_group.command(name="upgrade", description="Admin only: update Jano from GitHub (release or development branch)")
+    @app_commands.check(utils.restricted_check)
+    @utils.app_has_role("Admin")
+    async def jano_upgrade(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        # The three sources are looked up at the same time; one that fails does not hide the others.
+        sources = (("releases", self._upgrade_lookup()),
+                   ("main branch", self._upgrade_lookup_branch("main")),
+                   ("development branch", self._upgrade_lookup_branch("dev")))
+        results = await asyncio.gather(*(lookup for _, lookup in sources), return_exceptions=True)
+        notes, offers = [], []
+        for (label, _), result in zip(sources, results):
+            if isinstance(result, Exception):
+                self.log.error(f"Jano: {label} check failed: {result}", exc_info=not isinstance(result, UpgradeError))
+                notes.append(f"Could not check the {label}: {result}")
+            offers.append(None if isinstance(result, Exception) else result)
+        release, main, dev = _pick_offers(*offers)
+        if release is None and main is None and dev is None:
+            text = (f"❌ {' '.join(notes)}" if notes else
+                    f"✅ You already have the newest version (Ver. {COMMANDS_VERSION}).")
+            await _reply_temporarily(interaction, text, delay=30 if notes else 10)
+            return
+        view = _UpgradeView(self, interaction.user.id, release, main, dev)
+        view.message = await interaction.followup.send(embed=_upgrade_embed(COMMANDS_VERSION, release, main, dev, notes),
+                                                       view=view, ephemeral=True, wait=True)
+
+    async def _http_get(self, url: str, as_json: bool = False):
+        """GET `url` (HTTPS only, at most UPGRADE_MAX_BYTES). JSON or bytes."""
+        import aiohttp
+        if not url.startswith("https://"):
+            raise UpgradeError("Refusing a non-HTTPS download address.")
+        timeout = aiohttp.ClientTimeout(total=60)
+        async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": "Jano-upgrade",
+                                                                 "Accept": "application/vnd.github+json"}) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    raise UpgradeError(f"GitHub answered {resp.status}.")
+                if resp.url.scheme != "https":
+                    raise UpgradeError("Refusing a download that left HTTPS.")
+                chunks, size = [], 0
+                async for chunk in resp.content.iter_chunked(65536):   # the whole body, not just what has arrived
+                    size += len(chunk)
+                    if size > UPGRADE_MAX_BYTES:
+                        raise UpgradeError("The download is larger than expected.")
+                    chunks.append(chunk)
+        data = b"".join(chunks)
+        return json.loads(data) if as_json else data
+
+    async def _upgrade_lookup(self) -> dict | None:
+        """The release to offer, or None when the installed one is the newest."""
+        releases = await self._http_get(f"https://api.github.com/repos/{UPGRADE_REPO}/releases?per_page=15", as_json=True)
+        return _pick_release(releases, _release_version(COMMANDS_VERSION) or (0, 0, 0))
+
+    async def _upgrade_lookup_branch(self, branch: str) -> dict | None:
+        """A branch of the repository ("main" or "dev"), if its version is above the installed one (None
+        if not). The zip is downloaded and checked now, so what is offered is exactly what would be installed."""
+        data = await self._http_get(f"https://api.github.com/repos/{UPGRADE_REPO}/zipball/{branch}")
+        text = _zip_version(_read_release_zip(data))
+        version = _release_version(text)
+        if not version or version <= (_release_version(COMMANDS_VERSION) or (0, 0, 0)):
+            return None
+        return {"channel": branch, "version": version, "text": text, "tag": branch, "prerelease": branch == "dev",
+                "notes": "", "data": data}
+
+    @staticmethod
+    def _plugin_dir() -> str:
+        return os.path.dirname(os.path.abspath(__file__))
+
+    def _run_migration(self, migrate_source: bytes) -> str:
+        """Run the release's migrate_config.py on this installation's jano.yaml. Returns "" when fine,
+        else a short note (the file is then left as it was)."""
+        yaml_path = os.path.join(self.node.config_dir, "plugins", "jano.yaml")
+        if not os.path.exists(yaml_path):
+            return ""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = os.path.join(tmp, "migrate_config.py")
+            with open(script, "wb") as f:
+                f.write(migrate_source)
+            try:
+                res = subprocess.run([sys.executable, "-I", script, yaml_path], capture_output=True, text=True,
+                                     timeout=120)
+            except Exception as e:
+                return f"configuration migration could not run ({e})"
+        if res.returncode != 0:
+            self.log.warning(f"Jano: configuration migration failed: {res.stdout.strip()} {res.stderr.strip()}")
+            return "configuration migration reported an error (your file is unchanged)"
+        return ""
+
+    async def _upgrade_run(self, interaction: discord.Interaction, release: dict) -> None:
+        """Download (or take the checked dev zip), install, telling the admin each step, then ask whether
+        to restart. Any failure leaves the previous files in place."""
+        if self._upgrading:
+            await interaction.followup.send("An update is already running.", ephemeral=True)
+            return
+        self._upgrading = True
+
+        async def say(text: str, view=None) -> None:
+            await interaction.edit_original_response(content=text, embed=None, view=view)
+        try:
+            if release.get("data") is None:
+                await say("⏳ Downloading the release...")
+                data = await self._http_get(release["zip_url"])
+            else:
+                data = release["data"]
+            await say("🔎 Checking the files...")
+            files = _read_release_zip(data, release["text"])
+            await say("📦 Installing...")
+            changed = await asyncio.to_thread(_install_release_files, self._plugin_dir(), files)
+            script = files.get("migrate_config.py")
+            note = await asyncio.to_thread(self._run_migration, script) if script else ""
+        except UpgradeError as e:
+            await say(f"❌ Update stopped: {e}")
+            _spawn(_later(30, interaction.delete_original_response))
+            return
+        except Exception as e:
+            self.log.error(f"Jano: update failed: {e}", exc_info=True)
+            await say(f"❌ Update failed, the previous version is still in place: {e}")
+            _spawn(_later(30, interaction.delete_original_response))
+            return
+        finally:
+            self._upgrading = False
+        self.log.info(f"Jano: updated {COMMANDS_VERSION} -> {release['text']} "
+                      f"({len(changed)} file(s) replaced, restart pending).")
+        view = _RestartView(self, interaction.user.id, release["text"])
+        view.message = await interaction.original_response()
+        await say(f"✅ Updated to Ver. {release['text']} ({len(changed)} file(s) replaced; the old ones are kept in "
+                  f"`plugins/jano/.backup`)." + (f" ⚠️ {note}." if note else "")
+                  + "\nDo you want to restart DCSServerBot now so the update takes effect?",
+                  view=view)
+
+    # The notice that closes a restart: the new process finishes what the old one started.
+
+    def _restart_notice_file(self) -> str:
+        return os.path.join(self._plugin_dir(), ".restart_notice.json")
+
+    def _save_restart_notice(self, interaction: discord.Interaction, expected: str) -> None:
+        try:
+            with open(self._restart_notice_file(), "w", encoding="utf-8") as f:
+                json.dump({"app_id": interaction.application_id, "token": interaction.token,
+                           "message_id": interaction.message.id, "expected": expected, "created": time.time()}, f)
+            self.log.info("Jano: restart notice saved for the next start.")
+        except Exception as e:
+            self.log.warning(f"Jano: could not save the restart notice: {e!r}")
+
+    def _notice_webhook(self, app_id, token):
+        return discord.Webhook.partial(app_id, token, client=self.bot)
+
+    async def _finish_restart_notice(self) -> None:
+        """After a restart asked from /jano upgrade: say whether the update was applied and which version
+        runs, then remove the message. The file is always deleted: used, stale or unreadable."""
+        path = self._restart_notice_file()
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        try:
+            if not isinstance(data, dict) or time.time() - float(data["created"]) > 14 * 60:
+                return   # too old: Discord no longer accepts its token
+            expected = str(data["expected"])
+            if expected == COMMANDS_VERSION:
+                text = f"✅ DCSServerBot has been updated successfully.\nJano Ver. {COMMANDS_VERSION} is now running."
+            else:
+                text = (f"⚠️ DCSServerBot restarted, but the update was not applied.\n"
+                        f"Jano Ver. {COMMANDS_VERSION} is running (Ver. {expected} was expected).")
+            hook = self._notice_webhook(data["app_id"], data["token"])
+            last_error = None
+            # The message the "Restart now" button sat on: "@original" for that button's token; its
+            # numeric id as a second way if Discord refuses the first.
+            for target in ("@original", int(data["message_id"])):
+                try:
+                    await hook.edit_message(target, content=text, embeds=[], view=None)
+                except Exception as e:
+                    last_error = e
+                    continue
+                self.log.info(f"Jano: restart notice delivered ({text[:2]}).")
+                _spawn(_later(20, lambda target=target: hook.delete_message(target)))
+                return
+            self.log.warning(f"Jano: could not update the restart message: {last_error!r}")
+        except Exception as e:
+            self.log.warning(f"Jano: could not finish the restart notice: {e!r}")
+
     # One shared autocomplete for the "instance" argument of every command.
     jano_status.autocomplete("instance")(_autocomplete_instance)
     jano_comms.autocomplete("instance")(_autocomplete_instance)
@@ -1150,6 +1353,11 @@ async def _delete_after(message: discord.Message, delay: int = 120):
 
 async def _followup_send(interaction: discord.Interaction, embed: discord.Embed, delay: int = 120):
     msg = await interaction.followup.send(embed=embed, ephemeral=True)
+    _spawn(_delete_after(msg, delay))
+
+async def _reply_temporarily(interaction: discord.Interaction, text: str, delay: int = 10) -> None:
+    """Private plain-text reply that removes itself after `delay` seconds."""
+    msg = await interaction.followup.send(text, ephemeral=True, wait=True)
     _spawn(_delete_after(msg, delay))
 
 _background_tasks: set = set()
@@ -1294,6 +1502,343 @@ class ViewResumeAuto(BotView):
     @discord.ui.button(label="Resume automatic schedule", style=discord.ButtonStyle.primary, emoji="♻️")
     async def btn_resume_auto(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _resume_and_reply(self, interaction, "♻️ Schedule resumed")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UPGRADE FROM GITHUB — /jano upgrade
+# ══════════════════════════════════════════════════════════════════════════════
+
+UPGRADE_REPO = "pierpaolobirdi/jano-dcsserverbot-plugin"
+UPGRADE_PREFIX = "plugins/jano/"
+UPGRADE_FILES = ("plugins/jano/__init__.py", "plugins/jano/commands.py", "plugins/jano/listener.py",
+                 "plugins/jano/version.py", "plugins/jano/db/tables.sql",
+                 "plugins/jano/schemas/jano_schema.yaml", "migrate_config.py")
+# absent from older versions: migrate_config.py before 5.0.7, the web console schema before 5.0.10
+UPGRADE_OPTIONAL = ("migrate_config.py", "plugins/jano/schemas/jano_schema.yaml")
+UPGRADE_MAX_BYTES = 25 * 1024 * 1024
+
+
+class UpgradeError(Exception):
+    """A refusal the admin should read as is (nothing was changed)."""
+
+
+async def _later(delay: float, action) -> None:
+    """Run the async `action` once, `delay` seconds from now (errors ignored: the message may already
+    be gone or its interaction token expired)."""
+    await asyncio.sleep(delay)
+    try:
+        await action()
+    except Exception as e:
+        log.debug(f"Jano: clean-up of a message failed: {e!r}")
+
+
+def _release_version(text) -> tuple[int, int, int] | None:
+    """(5, 0, 2) from a tag like 'v.5.0.2' or '5.0.2'; None if it has no x.y.z."""
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", str(text or ""))
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def _pick_release(releases: list, current: tuple[int, int, int]) -> dict | None:
+    """The newest published release above `current`; its code is GitHub's own zip of the tag.
+    Drafts are ignored; a pre-release is returned with prerelease=True."""
+    best = None
+    for rel in releases or []:
+        if rel.get("draft"):
+            continue
+        version = _release_version(rel.get("tag_name"))
+        if not version or version <= current or not rel.get("zipball_url"):
+            continue
+        if best is None or version > best["version"]:
+            best = {"version": version, "text": ".".join(map(str, version)), "tag": rel.get("tag_name", ""),
+                    "prerelease": bool(rel.get("prerelease")), "notes": rel.get("body") or "",
+                    "published": rel.get("published_at") or "", "zip_url": rel["zipball_url"]}
+    return best
+
+
+def _pick_offers(release: dict | None, main: dict | None, dev: dict | None) -> tuple:
+    """What to offer, from the most stable source to the least: the release, then the main branch, then the
+    development branch. A source is only offered when its version is above every more stable one, so when
+    the same version is on several, the most stable one wins and the others are not shown."""
+    if release and main and main["version"] <= release["version"]:
+        main = None
+    floor = max((o["version"] for o in (release, main) if o), default=None)
+    if dev and floor and dev["version"] <= floor:
+        dev = None
+    return release, main, dev
+
+
+def _zip_version(files: dict[str, bytes]) -> str | None:
+    m = re.search(rb'^COMMANDS_VERSION\s*=\s*"([^"]+)"', files[UPGRADE_PREFIX + "commands.py"], re.MULTILINE)
+    return m.group(1).decode() if m else None
+
+
+def _read_release_zip(data: bytes, version_text: str | None = None) -> dict[str, bytes]:
+    """The plugin's files out of GitHub's zip of a tag or branch (everything sits under one folder named
+    after the repository and commit). Only the expected files are taken, the rest of the repository is
+    ignored; every .py must compile, tables.sql must be the Jano schema and commands.py must announce the
+    tag's version."""
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+        entries = [i.filename for i in zf.infolist() if not i.is_dir()]
+    except zipfile.BadZipFile:
+        raise UpgradeError("The downloaded file is not a valid zip.")
+    tops = {n.split("/", 1)[0] for n in entries if "/" in n}
+    if len(tops) != 1:
+        raise UpgradeError("The downloaded zip does not have the expected layout.")
+    top = tops.pop() + "/"
+    files = {}
+    for name in UPGRADE_FILES:
+        if top + name not in entries:
+            if name in UPGRADE_OPTIONAL:
+                continue
+            raise UpgradeError(f"The release does not contain {name}.")
+        files[name] = zf.read(top + name)
+    for name, content in files.items():
+        if name.endswith(".py"):
+            try:
+                compile(content, name, "exec")
+            except SyntaxError as e:
+                raise UpgradeError(f"{name} does not compile ({e.msg}, line {e.lineno}).")
+    if b"jano_instances" not in files[UPGRADE_PREFIX + "db/tables.sql"]:
+        raise UpgradeError("db/tables.sql is not the Jano schema.")
+    found = _zip_version(files)
+    if not found or (version_text is not None and found != version_text):
+        raise UpgradeError("The version inside the release does not match its tag.")
+    return files
+
+
+_RESTORE_TEXT = """Jano - files of Ver. {version}, kept before the last update.
+
+If the new version does not work:
+  1. Stop DCSServerBot.
+  2. Copy every file in this folder except this one (keep the db and schemas subfolders as they are) over
+     the ones in the plugin folder, the one that contains this .backup folder.
+  3. Start DCSServerBot.
+Alternatively, download a release from GitHub and run its install.cmd.
+"""
+
+
+def _install_release_files(plugin_dir: str, files: dict[str, bytes]) -> list[str]:
+    """Replace the plugin's files with the release's, keeping a copy of the old ones in
+    <plugin_dir>/.backup (the previous backup is replaced). Files that are already identical are left
+    alone; other files in the folder are never touched. Any failure puts the old files back and raises.
+    Returns the names of the files that changed."""
+    def path_of(rel: str) -> str:
+        return os.path.join(plugin_dir, *rel.split("/"))
+
+    old, changed = {}, {}
+    for name, content in files.items():
+        if not name.startswith(UPGRADE_PREFIX):
+            continue                                 # migrate_config.py is run from a temporary folder, not installed
+        rel = name[len(UPGRADE_PREFIX):]
+        current = None
+        if os.path.exists(path_of(rel)):
+            with open(path_of(rel), "rb") as f:
+                current = f.read()
+        if current != content:
+            changed[rel], old[rel] = content, current
+    if not changed:
+        return []
+    backup = os.path.join(plugin_dir, ".backup")
+    shutil.rmtree(backup, ignore_errors=True)
+    os.makedirs(backup, exist_ok=True)
+    with open(os.path.join(backup, "RESTORE.txt"), "w", encoding="utf-8") as f:
+        f.write(_RESTORE_TEXT.format(version=COMMANDS_VERSION))
+    for rel, content in old.items():
+        if content is not None:
+            dest = os.path.join(backup, *rel.split("/"))
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(content)
+    done = []
+    try:
+        for rel, content in changed.items():
+            os.makedirs(os.path.dirname(path_of(rel)), exist_ok=True)
+            with open(path_of(rel) + ".new", "wb") as f:
+                f.write(content)
+            os.replace(path_of(rel) + ".new", path_of(rel))
+            done.append(rel)
+    except Exception:
+        for rel in done:
+            if old[rel] is None:
+                os.remove(path_of(rel))
+            else:
+                with open(path_of(rel), "wb") as f:
+                    f.write(old[rel])
+        for rel in changed:
+            try:
+                os.remove(path_of(rel) + ".new")
+            except OSError:
+                pass
+        raise
+    return list(changed)
+
+
+def _upgrade_color(release: dict | None, dev: dict | None, notes: list[str]) -> int:
+    """The card's colour says how much care the choice needs: red when the development branch can be
+    chosen, orange for a pre-release or when a source could not be checked, green otherwise."""
+    if dev:
+        return 0xE74C3C
+    if (release or {}).get("prerelease") or notes:
+        return 0xF39C12
+    return 0x2ECC71
+
+
+def _upgrade_embed(current_text: str, release: dict | None, main: dict | None, dev: dict | None,
+                   notes: list[str]) -> discord.Embed:
+    embed = JanoEmbed(title="⬆️ Jano — update", description=((release or {}).get("notes", "").strip()[:900] or None),
+                      color=_upgrade_color(release, dev, notes))
+    embed.add_field(name="Installed", value=f"Ver. {current_text}", inline=True)
+    if release:
+        embed.add_field(name="Release", value=f"Ver. {release['text']}" + (" ⚠️ pre-release" if release["prerelease"] else ""),
+                        inline=True)
+    if main:
+        embed.add_field(name="Main branch", value=f"Ver. {main['text']}", inline=True)
+    if dev:
+        embed.add_field(name="Development branch", value=f"Ver. {dev['text']} ⚠️", inline=True)
+    if release and release["prerelease"]:
+        embed.add_field(name="⚠️ PRE-RELEASE",
+                        value="This release is a pre-release: it may be unstable. Update only if you want to test it.",
+                        inline=False)
+    if main:
+        embed.add_field(name="ℹ️ MAIN BRANCH",
+                        value="The stable branch, ahead of the latest release: it has not been published as a release yet.",
+                        inline=False)
+    if dev:
+        embed.add_field(name="⚠️ DEVELOPMENT BRANCH",
+                        value="Work in progress: it may contain errors. Updating to it asks you to accept that risk first.",
+                        inline=False)
+    for note in notes:
+        embed.add_field(name="⚠️ Not checked", value=note[:500], inline=False)
+    embed.add_field(name="What happens",
+                    value="The files are replaced (a copy of the old ones is kept). Afterwards you choose whether "
+                          "to restart DCSServerBot; the new version only runs after a restart.", inline=False)
+    return embed
+
+
+def _dev_warning_embed(dev: dict) -> discord.Embed:
+    embed = JanoEmbed(title="⚠️ Development branch", color=0xE74C3C,
+                      description=f"You are about to install **Ver. {dev['text']}** from the development branch.")
+    embed.add_field(name="The risk",
+                    value="This is code that is still being developed. It can contain errors, change how Jano looks "
+                          "or behaves, or stop working. It has not gone through a release.", inline=False)
+    embed.add_field(name="If something goes wrong",
+                    value="A copy of the current files is kept in `plugins/jano/.backup`. If the new version does "
+                          "not work, copy those files back over the ones in `plugins/jano` and restart, or run "
+                          "`install.cmd` from a release downloaded from GitHub.", inline=False)
+    embed.add_field(name="To continue", value="Press **Accept the risk and update** to confirm you understand this.",
+                    inline=False)
+    return embed
+
+
+class _AdminOnlyView(BotView):
+    """Only the admin who ran /jano upgrade can press its buttons."""
+
+    def __init__(self, plugin, user_id: int, timeout: int = 120):
+        super().__init__(timeout=timeout)
+        self.plugin, self.user_id = plugin, user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return getattr(interaction.user, "id", None) == self.user_id
+
+    async def _say_and_clear(self, text: str, delay: int) -> None:
+        """Replace the message with plain text (no card, no buttons) and delete it after `delay` seconds."""
+        if not self.message:
+            return
+        try:
+            await self.message.edit(content=text, embeds=[], view=None)
+        except Exception:
+            return
+        _spawn(_delete_after(self.message, delay))
+
+    async def _cancelled(self, interaction: discord.Interaction) -> None:
+        self.stop()
+        await interaction.response.edit_message(content="Update cancelled.", embed=None, view=None)
+        _spawn(_later(5, interaction.delete_original_response))
+
+    async def on_timeout(self) -> None:
+        await self._say_and_clear("Update offer expired.", 10)
+
+
+class _UpgradeView(_AdminOnlyView):
+    """Update to release / main branch / development branch / Cancel."""
+
+    def __init__(self, plugin, user_id: int, release: dict | None, main: dict | None, dev: dict | None):
+        super().__init__(plugin, user_id)
+        self.release, self.main, self.dev = release, main, dev
+        self.update_release.disabled = release is None
+        self.update_main.disabled = main is None
+        self.update_dev.disabled = dev is None
+
+    @discord.ui.button(label="Update to release", style=discord.ButtonStyle.success)
+    async def update_release(self, interaction: discord.Interaction, button):
+        self.stop()
+        await interaction.response.edit_message(view=None)
+        await self.plugin._upgrade_run(interaction, self.release)
+
+    @discord.ui.button(label="Update to main branch", style=discord.ButtonStyle.primary)
+    async def update_main(self, interaction: discord.Interaction, button):
+        self.stop()
+        await interaction.response.edit_message(view=None)
+        await self.plugin._upgrade_run(interaction, self.main)
+
+    @discord.ui.button(label="Update to development branch", style=discord.ButtonStyle.danger)
+    async def update_dev(self, interaction: discord.Interaction, button):
+        self.stop()
+        view = _DevWarningView(self.plugin, self.user_id, self.dev)
+        await interaction.response.edit_message(embed=_dev_warning_embed(self.dev), view=view)
+        view.message = await interaction.original_response()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button):
+        await self._cancelled(interaction)
+
+
+class _DevWarningView(_AdminOnlyView):
+    """The step before a development-branch update: accept the risk, or cancel."""
+
+    def __init__(self, plugin, user_id: int, dev: dict):
+        super().__init__(plugin, user_id)
+        self.dev = dev
+
+    @discord.ui.button(label="Accept the risk and update", style=discord.ButtonStyle.danger)
+    async def accept(self, interaction: discord.Interaction, button):
+        self.stop()
+        await interaction.response.edit_message(view=None)
+        await self.plugin._upgrade_run(interaction, self.dev)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button):
+        await self._cancelled(interaction)
+
+
+class _RestartView(_AdminOnlyView):
+    """After a successful update: restart DCSServerBot now, or later."""
+
+    def __init__(self, plugin, user_id: int, text: str):
+        super().__init__(plugin, user_id, timeout=600)
+        self.text = text
+
+    def _later_text(self) -> str:
+        return f"✅ Ver. {self.text} is installed. It takes effect the next time DCSServerBot restarts."
+
+    @discord.ui.button(label="Restart now", style=discord.ButtonStyle.danger)
+    async def restart_now(self, interaction: discord.Interaction, button):
+        self.stop()
+        await interaction.response.edit_message(
+            content="🔄 Restarting DCSServerBot now... this message updates when it is back.", embed=None, view=None)
+        self.plugin._save_restart_notice(interaction, self.text)
+        await asyncio.sleep(1)
+        await self.plugin.bot.node.restart()
+
+    @discord.ui.button(label="Later", style=discord.ButtonStyle.secondary)
+    async def later(self, interaction: discord.Interaction, button):
+        self.stop()
+        await interaction.response.edit_message(content=self._later_text(), embed=None, view=None)
+        _spawn(_later(20, interaction.delete_original_response))
+
+    async def on_timeout(self) -> None:
+        await self._say_and_clear(self._later_text(), 20)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

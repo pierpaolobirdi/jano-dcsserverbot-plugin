@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+
+# /jano upgrade working files
+plugins/jano/.backup/
+plugins/jano/.restart_notice.json
+.pytest_cache/
