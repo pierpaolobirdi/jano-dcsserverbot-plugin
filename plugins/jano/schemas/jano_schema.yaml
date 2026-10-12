@@ -1,0 +1,26 @@
+type: map
+nullable: false
+mapping:
+  DEFAULT:
+    type: map
+    nullable: false
+    mapping:
+      # Roles (names or numeric IDs) allowed to use the Jano commands on every instance; empty = everyone
+      command_role_ids:
+        type: seq
+        nullable: false
+        sequence:
+          - {type: text, nullable: false}
+      # IANA timezone name used for the schedules
+      timezone: {type: str, nullable: false, range: {min: 1}}
+      # Optional title/body of the opening announcement ({name} and {voice} are replaced)
+      open_message:
+        type: map
+        nullable: false
+        mapping:
+          title: {type: str, nullable: false}
+          body: {type: str, nullable: false}
+  commands:
+    include: 'commands_schema'
+  chat_commands:
+    include: 'chat_commands_schema'

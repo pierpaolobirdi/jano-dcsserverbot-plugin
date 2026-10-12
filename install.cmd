@@ -139,6 +139,9 @@ copy /Y "%SCRIPT_DIR%plugins\jano\version.py"     "!DCSSB_PATH!\plugins\jano\ver
 if errorlevel 1 set "COPY_FAIL=1"
 copy /Y "%SCRIPT_DIR%plugins\jano\db\tables.sql"  "!DCSSB_PATH!\plugins\jano\db\tables.sql"  > nul
 if errorlevel 1 set "COPY_FAIL=1"
+if not exist "!DCSSB_PATH!\plugins\jano\schemas" mkdir "!DCSSB_PATH!\plugins\jano\schemas"
+copy /Y "%SCRIPT_DIR%plugins\jano\schemas\jano_schema.yaml" "!DCSSB_PATH!\plugins\jano\schemas\jano_schema.yaml" > nul
+if errorlevel 1 set "COPY_FAIL=1"
 if defined COPY_FAIL (
     echo       !ERRC!FAILED!OFF! - Some plugin files could not be copied. Check the folder permissions and run the installer again.
 ) else (

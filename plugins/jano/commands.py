@@ -41,7 +41,7 @@ _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
 # install.cmd reads this line to show the installed/new version: keep the format COMMANDS_VERSION = "x.y.z"
-COMMANDS_VERSION = "5.0.9"
+COMMANDS_VERSION = "5.0.10"
 
 _MAX_INSTANCES = 4
 
@@ -1222,7 +1222,7 @@ class Jano(Plugin):
         await say(f"✅ Updated to Ver. {release['text']} ({len(changed)} file(s) replaced; the old ones are kept in "
                   f"`plugins/jano/.backup`)." + (f" ⚠️ {note}." if note else "")
                   + "\nDo you want to restart DCSServerBot now so the update takes effect?",
-                  view=view, color=0x2ECC71)
+                  view=view, color=0xF39C12 if note else 0x2ECC71)
 
     # The notice that closes a restart: the new process finishes what the old one started.
 
@@ -1509,8 +1509,10 @@ class ViewResumeAuto(BotView):
 UPGRADE_REPO = "pierpaolobirdi/jano-dcsserverbot-plugin"
 UPGRADE_PREFIX = "plugins/jano/"
 UPGRADE_FILES = ("plugins/jano/__init__.py", "plugins/jano/commands.py", "plugins/jano/listener.py",
-                 "plugins/jano/version.py", "plugins/jano/db/tables.sql", "migrate_config.py")
-UPGRADE_OPTIONAL = ("migrate_config.py",)            # absent from versions older than 5.0.7
+                 "plugins/jano/version.py", "plugins/jano/db/tables.sql",
+                 "plugins/jano/schemas/jano_schema.yaml", "migrate_config.py")
+# absent from older versions: migrate_config.py before 5.0.7, the web console schema before 5.0.10
+UPGRADE_OPTIONAL = ("migrate_config.py", "plugins/jano/schemas/jano_schema.yaml")
 UPGRADE_MAX_BYTES = 25 * 1024 * 1024
 
 
@@ -1603,6 +1605,17 @@ def _read_release_zip(data: bytes, version_text: str | None = None) -> dict[str,
     return files
 
 
+_RESTORE_TEXT = """Jano - files of Ver. {version}, kept before the last update.
+
+If the new version does not work:
+  1. Stop DCSServerBot.
+  2. Copy every file in this folder except this one (keep the db and schemas subfolders as they are) over
+     the ones in the plugin folder, the one that contains this .backup folder.
+  3. Start DCSServerBot.
+Alternatively, download a release from GitHub and run its install.cmd.
+"""
+
+
 def _install_release_files(plugin_dir: str, files: dict[str, bytes]) -> list[str]:
     """Replace the plugin's files with the release's, keeping a copy of the old ones in
     <plugin_dir>/.backup (the previous backup is replaced). Files that are already identical are left
@@ -1626,6 +1639,9 @@ def _install_release_files(plugin_dir: str, files: dict[str, bytes]) -> list[str
         return []
     backup = os.path.join(plugin_dir, ".backup")
     shutil.rmtree(backup, ignore_errors=True)
+    os.makedirs(backup, exist_ok=True)
+    with open(os.path.join(backup, "RESTORE.txt"), "w", encoding="utf-8") as f:
+        f.write(_RESTORE_TEXT.format(version=COMMANDS_VERSION))
     for rel, content in old.items():
         if content is not None:
             dest = os.path.join(backup, *rel.split("/"))
@@ -1656,10 +1672,20 @@ def _install_release_files(plugin_dir: str, files: dict[str, bytes]) -> list[str
     return list(changed)
 
 
+def _upgrade_color(release: dict | None, dev: dict | None, notes: list[str]) -> int:
+    """The card's colour says how much care the choice needs: red when the development branch can be
+    chosen, orange for a pre-release or when a source could not be checked, green otherwise."""
+    if dev:
+        return 0xE74C3C
+    if (release or {}).get("prerelease") or notes:
+        return 0xF39C12
+    return 0x2ECC71
+
+
 def _upgrade_embed(current_text: str, release: dict | None, main: dict | None, dev: dict | None,
                    notes: list[str]) -> discord.Embed:
     embed = JanoEmbed(title="⬆️ Jano — update", description=((release or {}).get("notes", "").strip()[:900] or None),
-                      color=0xF39C12 if (release or {}).get("prerelease") else 0x2ECC71)
+                      color=_upgrade_color(release, dev, notes))
     embed.add_field(name="Installed", value=f"Ver. {current_text}", inline=True)
     if release:
         embed.add_field(name="Release", value=f"Ver. {release['text']}" + (" ⚠️ pre-release" if release["prerelease"] else ""),
@@ -1681,7 +1707,7 @@ def _upgrade_embed(current_text: str, release: dict | None, main: dict | None, d
                         value="Work in progress: it may contain errors. Updating to it asks you to accept that risk first.",
                         inline=False)
     for note in notes:
-        embed.add_field(name="ℹ️", value=note[:500], inline=False)
+        embed.add_field(name="⚠️ Not checked", value=note[:500], inline=False)
     embed.add_field(name="What happens",
                     value="The files are replaced (a copy of the old ones is kept). Afterwards you choose whether "
                           "to restart DCSServerBot; the new version only runs after a restart.", inline=False)
@@ -1695,8 +1721,9 @@ def _dev_warning_embed(dev: dict) -> discord.Embed:
                     value="This is code that is still being developed. It can contain errors, change how Jano looks "
                           "or behaves, or stop working. It has not gone through a release.", inline=False)
     embed.add_field(name="If something goes wrong",
-                    value="A copy of the current files is kept in `plugins/jano/.backup`, and a release can always "
-                          "be installed again with `install.cmd`.", inline=False)
+                    value="A copy of the current files is kept in `plugins/jano/.backup`. If the new version does "
+                          "not work, copy those files back over the ones in `plugins/jano` and restart, or run "
+                          "`install.cmd` from a release downloaded from GitHub.", inline=False)
     embed.add_field(name="To continue", value="Press **Accept the risk and update** to confirm you understand this.",
                     inline=False)
     return embed

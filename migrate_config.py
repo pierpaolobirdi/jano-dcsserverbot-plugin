@@ -9,7 +9,7 @@ It edits the file as text, so your values and comments stay exactly as they are.
   - adds the variables the file is missing (with their default value),
   - renames variables whose name changed,
   - removes variables that no longer exist.
-It prints what it did. When nothing needs to change the file is not touched. When something does,
+It also puts the schema file for the DCSServerBot web console in place (plugins/jano/schemas). It prints what it did. When nothing needs to change the file is not touched. When something does,
 the previous file is kept next to it as jano.yaml.bak. Exit code: 0 fine, 1 nothing done (error).
 """
 import os
@@ -136,6 +136,64 @@ def _loads(text: str):
         return None
 
 
+# ── The schema for DCSServerBot's web console ──────────────────────────────────
+# Same text as plugins/jano/schemas/jano_schema.yaml (a test keeps them equal).
+# It is here so that this script, which every install and every /jano upgrade runs, also puts that
+# file in place when an older installer did not know about it.
+SCHEMA_TEXT = r'''type: map
+nullable: false
+mapping:
+  DEFAULT:
+    type: map
+    nullable: false
+    mapping:
+      # Roles (names or numeric IDs) allowed to use the Jano commands on every instance; empty = everyone
+      command_role_ids:
+        type: seq
+        nullable: false
+        sequence:
+          - {type: text, nullable: false}
+      # IANA timezone name used for the schedules
+      timezone: {type: str, nullable: false, range: {min: 1}}
+      # Optional title/body of the opening announcement ({name} and {voice} are replaced)
+      open_message:
+        type: map
+        nullable: false
+        mapping:
+          title: {type: str, nullable: false}
+          body: {type: str, nullable: false}
+  commands:
+    include: 'commands_schema'
+  chat_commands:
+    include: 'chat_commands_schema'
+'''
+
+
+def install_schema(yaml_path: str) -> None:
+    """Write schemas/jano_schema.yaml into the plugin folder when it is missing or different. The folder
+    is looked for from the working directory (DCSServerBot's root), then from the config file's place
+    (<root>/config/plugins/jano.yaml). Never fatal."""
+    candidates = [os.path.join(os.getcwd(), "plugins", "jano"),
+                  os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(yaml_path)))),
+                               "plugins", "jano")]
+    folder = next((c for c in candidates if os.path.isdir(c)), None)
+    if folder is None:
+        print("  Schema: plugin folder not found, schema file not installed.")
+        return
+    target = os.path.join(folder, "schemas", "jano_schema.yaml")
+    try:
+        if os.path.exists(target):
+            with open(target, encoding="utf-8", newline="") as f:
+                if f.read() == SCHEMA_TEXT:
+                    return
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8", newline="\n") as f:
+            f.write(SCHEMA_TEXT)
+        print("  Schema: schemas/jano_schema.yaml installed.")
+    except OSError as e:
+        print(f"  Schema: could not write {target} ({e}).")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print("Usage: migrate_config.py <path to jano.yaml>")
@@ -144,6 +202,7 @@ def main(argv: list[str]) -> int:
     if not os.path.exists(path):
         print(f"File not found: {path}")
         return 1
+    install_schema(path)
     try:
         with open(path, "r", encoding="utf-8", newline="") as f:
             content = f.read()

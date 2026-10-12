@@ -637,7 +637,7 @@ def test_a_failing_source_does_not_hide_the_others(tmp_path, monkeypatch, sleeps
     asyncio.run(commands.Jano.jano_upgrade.callback(p, it))
     sent = it.followup.sent[0]
     assert not sent["view"].update_main.disabled and sent["view"].update_release.disabled
-    notes = " ".join(f.value for f in sent["embed"].fields if f.name == "ℹ️")
+    notes = " ".join(f.value for f in sent["embed"].fields if f.name == "⚠️ Not checked")
     assert "releases" in notes and "development branch" in notes and "main branch" not in notes
 
 
@@ -661,3 +661,30 @@ def test_zip_without_migrator_is_accepted():
     files = commands._read_release_zip(_zip(drop=["migrate_config.py"]), "9.9.9")
     assert "migrate_config.py" not in files
     assert "plugins/jano/commands.py" in files
+
+
+# ── colours of the offer card, restore note, web console schema ──────────────────
+def test_card_colour_follows_the_care_the_choice_needs():
+    rel, pre = {"prerelease": False}, {"prerelease": True}
+    dev = {"version": (9, 9, 9)}
+    assert commands._upgrade_color(rel, None, []) == 0x2ECC71
+    assert commands._upgrade_color(pre, None, []) == 0xF39C12
+    assert commands._upgrade_color(rel, None, ["Could not check the main branch: x"]) == 0xF39C12
+    assert commands._upgrade_color(rel, dev, []) == 0xE74C3C
+    assert commands._upgrade_color(pre, dev, ["x"]) == 0xE74C3C
+
+
+def test_backup_folder_explains_how_to_go_back(tmp_path):
+    (tmp_path / "commands.py").write_text("old")
+    commands._install_release_files(str(tmp_path), {"plugins/jano/commands.py": b"new"})
+    text = (tmp_path / ".backup" / "RESTORE.txt").read_text(encoding="utf-8")
+    assert commands.COMMANDS_VERSION in text and "Stop DCSServerBot" in text
+    assert (tmp_path / ".backup" / "commands.py").read_text() == "old"
+
+
+def test_schema_is_installed_in_its_subfolder_and_is_optional_in_old_zips(tmp_path):
+    files = commands._read_release_zip(_zip(extra={"plugins/jano/schemas/jano_schema.yaml": "a: 1\n"}), "9.9.9")
+    commands._install_release_files(str(tmp_path), files)
+    assert (tmp_path / "schemas" / "jano_schema.yaml").read_text() == "a: 1\n"
+    old = commands._read_release_zip(_zip(drop=["plugins/jano/schemas/jano_schema.yaml"]), "9.9.9")
+    assert "plugins/jano/schemas/jano_schema.yaml" not in old

@@ -55,15 +55,16 @@ With no instances yet, `/jano setup` offers a single **New instance** button. On
 ### `/jano upgrade`
 Checks GitHub for a newer version of Jano and offers to install it. It needs the `Admin` role of DCSServerBot, replies privately, and only the admin who ran it can press the buttons. It is not an automatic updater: nothing happens unless an admin runs the command and confirms.
 
-1. The reply shows the installed version and what is newer, with the release notes. There are three sources: the latest **release**, the **main branch** and the **development branch**. A source is offered only when its version is higher than the installed one and higher than the more stable sources above it (release, then main, then development), so you never see a branch that offers nothing beyond the release. A **pre-release** is marked with a warning. Running the command and pressing **Cancel** is the way to just check.
+1. The card's colour tells how much care the choice needs: **green** when only stable versions are offered, **orange** for a pre-release or when one of the sources could not be checked (the reason is written on the card), **red** whenever the development branch can be chosen. The reply shows the installed version and what is newer, with the release notes. There are three sources: the latest **release**, the **main branch** and the **development branch**. A source is offered only when its version is higher than the installed one and higher than the more stable sources above it (release, then main, then development), so you never see a branch that offers nothing beyond the release. A **pre-release** is marked with a warning. Running the command and pressing **Cancel** is the way to just check.
 2. Buttons: **Update to release**, **Update to main branch**, **Update to development branch**, **Cancel** (or let it expire after two minutes). A button is disabled when there is nothing newer on that side.
 3. The development branch is work in progress and may contain errors, so choosing it first shows a **warning of the risk**, and nothing is installed until you press **Accept the risk and update**. Release and main branch are installed directly after pressing their button.
 4. When the update finishes you are told it worked and asked whether to **restart DCSServerBot now** or **later**. If you restart, the message updates by itself once DCSServerBot is back, confirming which version is running, and then disappears. The new version only takes effect after a restart: choosing *Later* leaves it installed and active at the next restart.
 
 Safety:
 - It downloads only from this plugin's GitHub repository, over HTTPS (a release's zip, or the zip of the main or development branch).
-- Only the plugin's own files are taken from that zip (`__init__.py`, `commands.py`, `listener.py`, `version.py` and `db/tables.sql`). Each one is checked before anything is replaced: it must compile, the schema must be Jano's, and the version inside must be the one announced.
-- The previous files are kept in `plugins/jano/.backup`, and if anything fails halfway they are put back and nothing restarts.
+- Only the plugin's own files are taken from that zip (`__init__.py`, `commands.py`, `listener.py`, `version.py`, `db/tables.sql` and the web console schema `schemas/jano_schema.yaml`). Each one is checked before anything is replaced: it must compile, the schema must be Jano's, and the version inside must be the one announced.
+- The previous files are kept in `plugins/jano/.backup` (with a `RESTORE.txt` that says how to go back), and if anything fails halfway they are put back and nothing restarts.
+- If the new version installs but does not work (the bot or the plugin fails to start), stop DCSServerBot, copy the files from `plugins/jano/.backup` over the ones in `plugins/jano` (all except `RESTORE.txt`, keeping the `db` and `schemas` subfolders) and start it again. `.backup` holds only the plugin files, not `install.cmd`; to use that, download a release from GitHub.
 - Your `jano.yaml` and your database are not touched by the update itself. A changed database schema is applied by Jano when it starts, as always.
 - If DCSServerBot is configured with `restrict_commands: true`, `/jano upgrade` is blocked like the rest of its administration commands.
 - The restart is the same one as DCSServerBot's own `/node restart` on the master node. It relies on how you start the bot: launched with `run.cmd` (or `run.sh`, or a service that starts it again) it comes back by itself; launched any other way it would only stop.
@@ -128,8 +129,10 @@ DCSServerBot/
         ├── commands.py
         ├── listener.py
         ├── version.py
-        └── db/
-            └── tables.sql
+        ├── db/
+        │   └── tables.sql
+        └── schemas/
+            └── jano_schema.yaml
 ```
 
 #### 3. Copy configuration file
@@ -180,6 +183,14 @@ DEFAULT:
 | `open_message.body` | Body of the schedule-open announcement embed. Same placeholders available. | Built-in English text |
 
 Full list of timezone names: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+
+### Settings in the DCSServerBot web console
+
+The plugin ships a schema (`plugins/jano/schemas/jano_schema.yaml`), so the web console's **Settings** page builds a form for `jano.yaml` (the command roles, the timezone and the opening announcement). DCSServerBot also uses the same schema to check the file when it loads. Notes:
+
+- Saves apply after a restart of the bot, like any other plugin setting.
+- A new variable is added to the schema together with the plugin. `/jano upgrade` and `install.cmd` install the schema file with the rest, and `migrate_config.py` (which both run) puts it in place too, so it also arrives when the update is made by an older version of the command.
+- If you copy the plugin files by hand, copy the `schemas` folder as well, or run `migrate_config.py` on your `jano.yaml`: without the schema the settings form is shown read-only.
 
 ---
 
