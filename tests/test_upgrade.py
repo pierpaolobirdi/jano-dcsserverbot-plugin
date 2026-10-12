@@ -16,9 +16,9 @@ TOP = "pierpaolobirdi-jano-dcsserverbot-plugin-abc1234/"      # GitHub's zip put
 SCHEMA = "CREATE TABLE IF NOT EXISTS jano_instances (name TEXT);\n"
 
 
-def _zip(version="9.9.9", drop=(), extra=None, commands_src=None, tables=SCHEMA, top=TOP):
+def _zip(version="9.9.9", drop=(), extra=None, version_src=None, tables=SCHEMA, top=TOP):
     files = {n: "x = 1\n" for n in commands.UPGRADE_FILES}
-    files["plugins/jano/commands.py"] = commands_src or f'COMMANDS_VERSION = "{version}"\n'
+    files["plugins/jano/version.py"] = version_src or f'__version__ = "1.0"\nPLUGIN_RELEASE = "{version}"\n'
     files["plugins/jano/db/tables.sql"] = tables
     files["README.md"] = "the rest of the repository\n"
     files["tests/test_x.py"] = "def test(): pass\n"
@@ -78,7 +78,7 @@ def test_only_the_expected_files_are_taken_from_the_whole_repository_zip():
     (_zip(drop=["plugins/jano/db/tables.sql"]), "does not contain plugins/jano/db/tables.sql"),
     (_zip(extra={"plugins/jano/listener.py": "def broken(:\n"}), "does not compile"),
     (_zip(tables="SELECT 1;\n"), "not the Jano schema"),
-    (_zip(commands_src="x = 1\n"), "does not match its tag"),
+    (_zip(version_src="x = 1\n"), "does not match its tag"),
     (_zip("1.2.3"), "does not match its tag"),                                 # the zip announces 1.2.3, tag says 9.9.9
 ])
 def test_a_zip_that_is_wrong_is_refused(data, why):
@@ -109,7 +109,7 @@ def test_install_replaces_the_files_keeps_a_backup_and_leaves_other_files(tmp_pa
     changed = commands._install_release_files(str(tmp_path), _release_files())
     assert "commands.py" in changed and "listener.py" not in changed
     assert "db/tables.sql" in changed and (tmp_path / "db" / "tables.sql").read_text() == SCHEMA   # new sub-folder
-    assert (tmp_path / "commands.py").read_text().startswith('COMMANDS_VERSION = "9.9.9"')
+    assert (tmp_path / "version.py").read_text().endswith('PLUGIN_RELEASE = "9.9.9"\n')
     assert (tmp_path / ".backup" / "commands.py").read_text() == "old commands"
     assert (tmp_path / "mine.py").read_text() == "my own file"
     assert os.path.getmtime(tmp_path / "listener.py") == before
@@ -119,7 +119,7 @@ def test_install_replaces_the_files_keeps_a_backup_and_leaves_other_files(tmp_pa
 def test_a_second_install_replaces_the_backup_with_the_state_before_it(tmp_path):
     commands._install_release_files(str(tmp_path), _release_files("9.9.9"))
     commands._install_release_files(str(tmp_path), _release_files("9.9.10"))
-    assert (tmp_path / ".backup" / "commands.py").read_text() == 'COMMANDS_VERSION = "9.9.9"\n'
+    assert (tmp_path / ".backup" / "version.py").read_text().endswith('PLUGIN_RELEASE = "9.9.9"\n')
 
 
 def test_installing_the_same_files_changes_nothing(tmp_path):
@@ -366,7 +366,7 @@ def test_a_release_update_installs_then_asks_about_the_restart(tmp_path, monkeyp
         view = it.followup.sent[0]["view"]
         await view.update_release.callback(it)
     asyncio.run(go())
-    assert (tmp_path / "commands.py").read_text().startswith('COMMANDS_VERSION = "9.9.9"')
+    assert (tmp_path / "version.py").read_text().endswith('PLUGIN_RELEASE = "9.9.9"\n')
     steps = [kw["content"] for kw in it.original if kw.get("content")]
     assert all(kw.get("embed") is None for kw in it.original)
     assert steps[0].startswith("⏳") and steps[1].startswith("🔎") and steps[2].startswith("📦") and steps[-1].startswith("✅")
@@ -409,7 +409,7 @@ def test_the_dev_button_shows_a_risk_warning_and_installs_only_after_accepting(t
         assert warning["embed"].fields[0].name == "The risk"
         await next(b for b in warning["view"].children if b.label.startswith("Accept")).callback(it)
     asyncio.run(go())
-    assert (tmp_path / "commands.py").read_text().startswith('COMMANDS_VERSION = "9.9.9"')
+    assert (tmp_path / "version.py").read_text().endswith('PLUGIN_RELEASE = "9.9.9"\n')
     assert p.downloads == []                                                # the zip that was offered is the one installed
 
 
@@ -468,7 +468,7 @@ def _notice(tmp_path, expected="9.9.9", age=0):
 
 
 def test_the_restart_notice_reports_ok_or_a_mismatch(tmp_path, monkeypatch, sleeps):
-    for expected, ok in ((commands.COMMANDS_VERSION, True), ("9.9.9", False)):
+    for expected, ok in ((commands.PLUGIN_RELEASE, True), ("9.9.9", False)):
         sleeps.tasks.clear()                       # each asyncio.run is its own event loop
         p, hook = make_plugin(tmp_path), _Hook()
         p._notice_webhook = lambda app_id, token, hook=hook: hook
@@ -629,7 +629,7 @@ def test_the_main_branch_installs_what_was_offered_without_a_risk_warning(tmp_pa
         await commands.Jano.jano_upgrade.callback(p, it)
         await it.followup.sent[0]["view"].update_main.callback(it)
     asyncio.run(go())
-    assert (tmp_path / "commands.py").read_text().startswith('COMMANDS_VERSION = "9.9.10"')
+    assert (tmp_path / "version.py").read_text().endswith('PLUGIN_RELEASE = "9.9.10"\n')
     assert p.downloads == [] and it.original[-1]["view"].children[0].label == "Restart now"
 
 
@@ -681,7 +681,7 @@ def test_backup_folder_explains_how_to_go_back(tmp_path):
     (tmp_path / "commands.py").write_text("old")
     commands._install_release_files(str(tmp_path), {"plugins/jano/commands.py": b"new"})
     text = (tmp_path / ".backup" / "RESTORE.txt").read_text(encoding="utf-8")
-    assert commands.COMMANDS_VERSION in text and "Stop DCSServerBot" in text
+    assert commands.PLUGIN_RELEASE in text and "Stop DCSServerBot" in text
     assert (tmp_path / ".backup" / "commands.py").read_text() == "old"
 
 

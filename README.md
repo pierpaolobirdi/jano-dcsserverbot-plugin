@@ -64,7 +64,7 @@ The offer and the development-branch warning are cards; everything after that (p
 
 Safety:
 - It downloads only from this plugin's GitHub repository, over HTTPS (a release's zip, or the zip of the main or development branch).
-- Only the plugin's own files are taken from that zip (`__init__.py`, `commands.py`, `listener.py`, `version.py`, `db/tables.sql` and the web console schema `schemas/jano_schema.yaml`). Each one is checked before anything is replaced: it must compile, the schema must be Jano's, and the version inside must be the one announced.
+- Only the plugin's own files are taken from that zip (`__init__.py`, `commands.py`, `listener.py`, `version.py`, `db/tables.sql` and the web console schema `schemas/jano_schema.yaml`). Each one is checked before anything is replaced: it must compile, the schema must be Jano's, and the version inside (`PLUGIN_RELEASE` in `version.py`) must be the one announced.
 - The previous files are kept in `plugins/jano/.backup` (with a `RESTORE.txt` that says how to go back), and if anything fails halfway they are put back and nothing restarts.
 - If the new version installs but does not work (the bot or the plugin fails to start), stop DCSServerBot, copy the files from `plugins/jano/.backup` over the ones in `plugins/jano` (all except `RESTORE.txt`, keeping the `db` and `schemas` subfolders) and start it again. `.backup` holds only the plugin files, not `install.cmd`; to use that, download a release from GitHub.
 - Your `jano.yaml` and your database are not touched by the update itself. A changed database schema is applied by Jano when it starts, as always.
@@ -130,7 +130,7 @@ DCSServerBot/
         ├── __init__.py
         ├── commands.py
         ├── listener.py
-        ├── version.py
+        ├── version.py          (PLUGIN_RELEASE = the release; __version__ = DB schema, stays 1.0)
         ├── db/
         │   └── tables.sql
         └── schemas/
@@ -253,6 +253,18 @@ Things to know when coming from an older version (`jano.yaml` and the database n
 - **Global command roles are read from `jano.yaml` only.** The `jano_global` table is no longer used.
 - Old schedule/max-hours overrides stored in the database are ignored (a warning is logged if any is found).
 - Embeds now carry a footer with the plugin version.
+
+---
+
+## Versioning (developers)
+
+The release number is `PLUGIN_RELEASE` in `plugins/jano/version.py`, and nowhere else: the embed footer, `/jano upgrade`, `install.cmd` and external tools read it from there. Bump it with every release, keeping the line exactly as it is (`PLUGIN_RELEASE = "x.y.z"`).
+
+`__version__`, in the same file, is **not** the release. DCSServerBot's core reads it as the plugin's database-schema version (it expects `major.minor`, runs `db/update_v<x>.sql` for each step and logs `migrated to version ...` whenever it changes). Jano's own migrations run from `commands.py` at startup, so it stays at `1.0`.
+
+`commands.py` still carries one `COMMANDS_VERSION = "x.y.z"` line. It is a bridge for installations older than 5.1.1, whose `/jano upgrade` looks for it to accept a downloaded release. The code does not use it and a test keeps it equal to `PLUGIN_RELEASE` (so bump both until it goes); it is removed in the release after 5.1.1.
+
+The tests need `pip install pytest discord.py "psycopg[binary]" aiohttp pyyaml` and run with `python -m pytest tests`.
 
 ---
 

@@ -3,10 +3,10 @@ setlocal EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
 
-:: -- Version being installed: read from commands.py (single source of truth) ----
-:: The line in commands.py must keep this exact format:  COMMANDS_VERSION = "x.y.z"
+:: -- Version being installed: read from version.py (single source of truth) ------
+:: The line in version.py must keep this exact format:  PLUGIN_RELEASE = "x.y.z"
 set "NEW_VER=unknown"
-if exist "%SCRIPT_DIR%plugins\jano\commands.py" for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "%SCRIPT_DIR%plugins\jano\commands.py" 2^>nul') do set "NEW_VER=%%~V"
+if exist "%SCRIPT_DIR%plugins\jano\version.py" for /f "tokens=3" %%V in ('findstr /B /C:"PLUGIN_RELEASE = " "%SCRIPT_DIR%plugins\jano\version.py" 2^>nul') do set "NEW_VER=%%~V"
 
 :: -- Colors (ANSI escape codes, Windows 10/11 only; left empty on older systems) -
 set "NEWC="
@@ -59,7 +59,9 @@ if not "!DCSSB_PATH!"=="" (
     set "OLD_FILE=!DCSSB_PATH!\plugins\jano\commands.py"
     if exist "!OLD_FILE!" (
         set "OLD_VER=unknown (no version in the installed file)"
+        rem Before 5.1.1 the release was written in commands.py; since then it is in version.py.
         for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "!OLD_FILE!" 2^>nul') do set "OLD_VER=%%~V"
+        if exist "!DCSSB_PATH!\plugins\jano\version.py" for /f "tokens=3" %%V in ('findstr /B /C:"PLUGIN_RELEASE = " "!DCSSB_PATH!\plugins\jano\version.py" 2^>nul') do set "OLD_VER=%%~V"
     )
     echo Installing Jano !NEWC!Ver. !NEW_VER!!OFF! to: !DCSSB_PATH!
     if not defined OLD_VER (
@@ -93,7 +95,9 @@ if not defined SHOWN (
     set "OLD_FILE=!DCSSB_PATH!\plugins\jano\commands.py"
     if exist "!OLD_FILE!" (
         set "OLD_VER=unknown (no version in the installed file)"
+        rem Before 5.1.1 the release was written in commands.py; since then it is in version.py.
         for /f "tokens=3" %%V in ('findstr /B /C:"COMMANDS_VERSION" "!OLD_FILE!" 2^>nul') do set "OLD_VER=%%~V"
+        if exist "!DCSSB_PATH!\plugins\jano\version.py" for /f "tokens=3" %%V in ('findstr /B /C:"PLUGIN_RELEASE = " "!DCSSB_PATH!\plugins\jano\version.py" 2^>nul') do set "OLD_VER=%%~V"
     )
     echo Installing Jano !NEWC!Ver. !NEW_VER!!OFF! to: !DCSSB_PATH!
     if not defined OLD_VER (

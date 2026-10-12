@@ -32,6 +32,8 @@ import psycopg.rows
 from core import Group, Plugin, TEventListener, utils
 from services.bot import DCSServerBot
 
+from .version import PLUGIN_RELEASE
+
 log = logging.getLogger(__name__)
 
 # Default timezone — overridden per-plugin-instance via jano.yaml (timezone: "Europe/Madrid").
@@ -39,9 +41,14 @@ log = logging.getLogger(__name__)
 # stays scoped to the plugin instance and does not leak across hot-reloads.
 _DEFAULT_TZ = "Europe/Madrid"
 
-# Internal version of this file only — updated manually in commands.py, independent of version.py.
-# install.cmd reads this line to show the installed/new version: keep the format COMMANDS_VERSION = "x.y.z"
-COMMANDS_VERSION = "5.1.0"
+# The release shown in the footer is PLUGIN_RELEASE (version.py), updated manually. DCSServerBot
+# reads only __version__ there, not this one.
+#
+# Bridge line, to be removed in the release after 5.1.1: a plugin older than 5.1.1 checks a
+# downloaded release by reading this exact line in commands.py, so it must stay for them to
+# be able to update to 5.1.1. Nothing in the code uses it (a test keeps it equal to
+# PLUGIN_RELEASE).
+COMMANDS_VERSION = "5.1.1"
 
 _MAX_INSTANCES = 4
 
@@ -51,7 +58,7 @@ _STATUS_ICONS = re.compile(r"[🟢🔴]\s*")
 
 _FOOTER_SEPARATOR = "▬" * 36
 # Leading zero-width space keeps an empty line above the separator (Discord trims plain leading newlines).
-EMBED_FOOTER = f"\u200b\n{_FOOTER_SEPARATOR}\nJano v.{COMMANDS_VERSION}"
+EMBED_FOOTER = f"\u200b\n{_FOOTER_SEPARATOR}\nJano v.{PLUGIN_RELEASE}"
 
 
 class JanoEmbed(discord.Embed):
@@ -1112,11 +1119,11 @@ class Jano(Plugin):
         release, main, dev = _pick_offers(*offers)
         if release is None and main is None and dev is None:
             text = (f"❌ {' '.join(notes)}" if notes else
-                    f"✅ You already have the newest version (Ver. {COMMANDS_VERSION}).")
+                    f"✅ You already have the newest version (Ver. {PLUGIN_RELEASE}).")
             await _reply_temporarily(interaction, text, delay=30 if notes else 10)
             return
         view = _UpgradeView(self, interaction.user.id, release, main, dev)
-        view.message = await interaction.followup.send(embed=_upgrade_embed(COMMANDS_VERSION, release, main, dev, notes),
+        view.message = await interaction.followup.send(embed=_upgrade_embed(PLUGIN_RELEASE, release, main, dev, notes),
                                                        view=view, ephemeral=True, wait=True)
 
     async def _http_get(self, url: str, as_json: bool = False):
@@ -1144,7 +1151,7 @@ class Jano(Plugin):
     async def _upgrade_lookup(self) -> dict | None:
         """The release to offer, or None when the installed one is the newest."""
         releases = await self._http_get(f"https://api.github.com/repos/{UPGRADE_REPO}/releases?per_page=15", as_json=True)
-        return _pick_release(releases, _release_version(COMMANDS_VERSION) or (0, 0, 0))
+        return _pick_release(releases, _release_version(PLUGIN_RELEASE) or (0, 0, 0))
 
     async def _upgrade_lookup_branch(self, branch: str) -> dict | None:
         """A branch of the repository ("main" or "dev"), if its version is above the installed one (None
@@ -1152,7 +1159,7 @@ class Jano(Plugin):
         data = await self._http_get(f"https://api.github.com/repos/{UPGRADE_REPO}/zipball/{branch}")
         text = _zip_version(_read_release_zip(data))
         version = _release_version(text)
-        if not version or version <= (_release_version(COMMANDS_VERSION) or (0, 0, 0)):
+        if not version or version <= (_release_version(PLUGIN_RELEASE) or (0, 0, 0)):
             return None
         return {"channel": branch, "version": version, "text": text, "tag": branch, "prerelease": branch == "dev",
                 "notes": "", "data": data}
@@ -1214,7 +1221,7 @@ class Jano(Plugin):
             return
         finally:
             self._upgrading = False
-        self.log.info(f"Jano: updated {COMMANDS_VERSION} -> {release['text']} "
+        self.log.info(f"Jano: updated {PLUGIN_RELEASE} -> {release['text']} "
                       f"({len(changed)} file(s) replaced, restart pending).")
         view = _RestartView(self, interaction.user.id, release["text"])
         view.message = await interaction.original_response()
@@ -1259,11 +1266,11 @@ class Jano(Plugin):
             if not isinstance(data, dict) or time.time() - float(data["created"]) > 14 * 60:
                 return   # too old: Discord no longer accepts its token
             expected = str(data["expected"])
-            if expected == COMMANDS_VERSION:
-                text = f"✅ DCSServerBot has been updated successfully.\nJano Ver. {COMMANDS_VERSION} is now running."
+            if expected == PLUGIN_RELEASE:
+                text = f"✅ DCSServerBot has been updated successfully.\nJano Ver. {PLUGIN_RELEASE} is now running."
             else:
                 text = (f"⚠️ DCSServerBot restarted, but the update was not applied.\n"
-                        f"Jano Ver. {COMMANDS_VERSION} is running (Ver. {expected} was expected).")
+                        f"Jano Ver. {PLUGIN_RELEASE} is running (Ver. {expected} was expected).")
             hook = self._notice_webhook(data["app_id"], data["token"])
             last_error = None
             # The message the "Restart now" button sat on: "@original" for that button's token; its
@@ -1568,14 +1575,14 @@ def _pick_offers(release: dict | None, main: dict | None, dev: dict | None) -> t
 
 
 def _zip_version(files: dict[str, bytes]) -> str | None:
-    m = re.search(rb'^COMMANDS_VERSION\s*=\s*"([^"]+)"', files[UPGRADE_PREFIX + "commands.py"], re.MULTILINE)
+    m = re.search(rb'^PLUGIN_RELEASE\s*=\s*"([^"]+)"', files[UPGRADE_PREFIX + "version.py"], re.MULTILINE)
     return m.group(1).decode() if m else None
 
 
 def _read_release_zip(data: bytes, version_text: str | None = None) -> dict[str, bytes]:
     """The plugin's files out of GitHub's zip of a tag or branch (everything sits under one folder named
     after the repository and commit). Only the expected files are taken, the rest of the repository is
-    ignored; every .py must compile, tables.sql must be the Jano schema and commands.py must announce the
+    ignored; every .py must compile, tables.sql must be the Jano schema and version.py must announce the
     tag's version."""
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
@@ -1643,7 +1650,7 @@ def _install_release_files(plugin_dir: str, files: dict[str, bytes]) -> list[str
     shutil.rmtree(backup, ignore_errors=True)
     os.makedirs(backup, exist_ok=True)
     with open(os.path.join(backup, "RESTORE.txt"), "w", encoding="utf-8") as f:
-        f.write(_RESTORE_TEXT.format(version=COMMANDS_VERSION))
+        f.write(_RESTORE_TEXT.format(version=PLUGIN_RELEASE))
     for rel, content in old.items():
         if content is not None:
             dest = os.path.join(backup, *rel.split("/"))
