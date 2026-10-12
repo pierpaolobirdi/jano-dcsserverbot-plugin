@@ -60,6 +60,8 @@ Checks GitHub for a newer version of Jano and offers to install it. It needs the
 3. The development branch is work in progress and may contain errors, so choosing it first shows a **warning of the risk**, and nothing is installed until you press **Accept the risk and update**. Release and main branch are installed directly after pressing their button.
 4. When the update finishes you are told it worked and asked whether to **restart DCSServerBot now** or **later**. If you restart, the message updates by itself once DCSServerBot is back, confirming which version is running, and then disappears. The new version only takes effect after a restart: choosing *Later* leaves it installed and active at the next restart.
 
+The offer and the development-branch warning are cards; everything after that (progress, result, errors, the restart question) is plain text. Messages remove themselves so the channel stays clean: 5 s after *Cancel*, 10 s after an offer expires or when you are already up to date, 20 s after the post-restart confirmation, and 30 s after *Later*, after an error or when GitHub could not be reached. The *Restarting...* message stays until the bot is back.
+
 Safety:
 - It downloads only from this plugin's GitHub repository, over HTTPS (a release's zip, or the zip of the main or development branch).
 - Only the plugin's own files are taken from that zip (`__init__.py`, `commands.py`, `listener.py`, `version.py`, `db/tables.sql` and the web console schema `schemas/jano_schema.yaml`). Each one is checked before anything is replaced: it must compile, the schema must be Jano's, and the version inside must be the one announced.

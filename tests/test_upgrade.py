@@ -301,7 +301,8 @@ def test_up_to_date_says_so(tmp_path, monkeypatch, sleeps):
         await sleeps.drain()
     asyncio.run(go())
     assert it.response.deferred and len(it.followup.sent) == 1
-    assert "newest version" in it.followup.sent[0]["embed"].description and it.followup.sent[0]["view"] is None
+    assert "newest version" in it.followup.sent[0]["content"] and it.followup.sent[0]["embed"] is None and it.followup.sent[0]["view"] is None
+    assert sleeps.deleted == [10]
     assert sleeps.deleted == [10]
 
 
@@ -353,7 +354,7 @@ def test_nothing_reachable_is_an_error_message_that_goes_after_30_seconds(tmp_pa
         await commands.Jano.jano_upgrade.callback(p, it)
         await sleeps.drain()
     asyncio.run(go())
-    assert "403" in it.followup.sent[0]["embed"].description and sleeps.deleted == [30]
+    assert "403" in it.followup.sent[0]["content"] and sleeps.deleted == [30]
 
 
 def test_a_release_update_installs_then_asks_about_the_restart(tmp_path, monkeypatch, sleeps):
@@ -366,7 +367,8 @@ def test_a_release_update_installs_then_asks_about_the_restart(tmp_path, monkeyp
         await view.update_release.callback(it)
     asyncio.run(go())
     assert (tmp_path / "commands.py").read_text().startswith('COMMANDS_VERSION = "9.9.9"')
-    steps = [kw["embed"].description for kw in it.original if kw.get("embed")]
+    steps = [kw["content"] for kw in it.original if kw.get("content")]
+    assert all(kw.get("embed") is None for kw in it.original)
     assert steps[0].startswith("⏳") and steps[1].startswith("🔎") and steps[2].startswith("📦") and steps[-1].startswith("✅")
     assert it.original[-1]["view"].children[0].label == "Restart now"
     assert p._upgrading is False
@@ -390,7 +392,7 @@ def test_restart_now_restarts_and_leaves_a_notice_later_does_not(tmp_path, monke
     p.restarts.clear()
     it = asyncio.run(go("Later"))
     assert p.restarts == [] and not (tmp_path / ".restart_notice.json").exists()
-    assert "takes effect the next time" in it.response.edits[0]["embed"].description and sleeps.later[-1] == 30
+    assert "takes effect the next time" in it.response.edits[0]["content"] and sleeps.later[-1] == 30
 
 
 def test_the_dev_button_shows_a_risk_warning_and_installs_only_after_accepting(tmp_path, monkeypatch, sleeps):
@@ -422,7 +424,7 @@ def test_cancelling_the_risk_warning_installs_nothing(tmp_path, monkeypatch, sle
         await sleeps.drain()
     asyncio.run(go())
     assert not list(tmp_path.iterdir()) and sleeps.later == [5]
-    assert it.response.edits[-1]["embed"].description == "Update cancelled."
+    assert it.response.edits[-1]["content"] == "Update cancelled."
 
 
 def test_a_broken_release_installs_nothing_and_says_so(tmp_path, monkeypatch, sleeps):
@@ -436,7 +438,7 @@ def test_a_broken_release_installs_nothing_and_says_so(tmp_path, monkeypatch, sl
         await sleeps.drain()
     asyncio.run(go())
     assert not list(tmp_path.iterdir())
-    assert "Update stopped" in it.original[-1]["embed"].description and sleeps.later == [30] and p._upgrading is False
+    assert "Update stopped" in it.original[-1]["content"] and sleeps.later == [30] and p._upgrading is False
 
 
 def test_a_second_update_while_one_runs_is_refused(tmp_path, monkeypatch, sleeps):
@@ -477,7 +479,8 @@ def test_the_restart_notice_reports_ok_or_a_mismatch(tmp_path, monkeypatch, slee
             await sleeps.drain()
         asyncio.run(go())
         target, kw = hook.edits[0]
-        text = kw["embeds"][0].description
+        text = kw["content"]
+        assert kw["embeds"] == []
         assert target == "@original" and (text.startswith("✅") if ok else text.startswith("⚠️"))
         assert not (tmp_path / ".restart_notice.json").exists()
 
@@ -555,7 +558,7 @@ def test_the_update_migrates_jano_yaml_and_does_not_install_the_migrator(tmp_pat
     it = _update(p, sleeps)
     assert "timezone" in yaml_path.read_text() and (yaml_path.parent / "jano.yaml.bak").exists()
     assert not (plugin_dir / "migrate_config.py").exists()
-    assert (plugin_dir / "commands.py").exists() and "⚠️" not in it.original[-1]["embed"].description
+    assert (plugin_dir / "commands.py").exists() and "⚠️" not in it.original[-1]["content"]
 
 
 def test_a_failing_migration_is_reported_but_the_update_still_counts(tmp_path, monkeypatch, sleeps):
@@ -564,7 +567,7 @@ def test_a_failing_migration_is_reported_but_the_update_still_counts(tmp_path, m
     it = _update(p, sleeps)
     assert yaml_path.read_text() == "DEFAULT:\n  command_role_ids: []\n"
     assert (plugin_dir / "commands.py").exists()
-    assert "migration reported an error" in it.original[-1]["embed"].description
+    assert "migration reported an error" in it.original[-1]["content"]
     assert it.original[-1]["view"].children[0].label == "Restart now"
 
 
@@ -688,3 +691,34 @@ def test_schema_is_installed_in_its_subfolder_and_is_optional_in_old_zips(tmp_pa
     assert (tmp_path / "schemas" / "jano_schema.yaml").read_text() == "a: 1\n"
     old = commands._read_release_zip(_zip(drop=["plugins/jano/schemas/jano_schema.yaml"]), "9.9.9")
     assert "plugins/jano/schemas/jano_schema.yaml" not in old
+
+
+# ── plain-text messages and their clean-up times ─────────────────────────────────
+class _Msg(_Sent):
+    def __init__(self):
+        self.edited = []
+
+    async def edit(self, **kw):
+        self.edited.append(kw)
+
+
+def test_expired_offers_and_questions_become_text_and_clean_up(tmp_path, monkeypatch, sleeps):
+    p = _plugin(tmp_path, monkeypatch)
+    views = [commands._UpgradeView(p, 1, _offer("9.9.9"), None, None),
+             commands._DevWarningView(p, 1, _dev_offer("9.9.9")),
+             commands._RestartView(p, 1, "9.9.9")]
+    msgs = []
+    for v in views:
+        v.message = _Msg()
+        msgs.append(v.message)
+
+    async def go():
+        for v in views:
+            await v.on_timeout()
+        await sleeps.drain()
+    asyncio.run(go())
+    assert [m.edited[0]["content"] for m in msgs] == [
+        "Update offer expired.", "Update offer expired.",
+        "✅ Ver. 9.9.9 is installed. It takes effect the next time DCSServerBot restarts."]
+    assert all(m.edited[0]["embeds"] == [] and m.edited[0]["view"] is None for m in msgs)
+    assert sleeps.deleted == [10, 10, 30]

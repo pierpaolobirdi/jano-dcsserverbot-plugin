@@ -41,7 +41,7 @@ _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
 # install.cmd reads this line to show the installed/new version: keep the format COMMANDS_VERSION = "x.y.z"
-COMMANDS_VERSION = "5.0.10"
+COMMANDS_VERSION = "5.0.11"
 
 _MAX_INSTANCES = 4
 
@@ -1113,8 +1113,7 @@ class Jano(Plugin):
         if release is None and main is None and dev is None:
             text = (f"❌ {' '.join(notes)}" if notes else
                     f"✅ You already have the newest version (Ver. {COMMANDS_VERSION}).")
-            await _followup_send(interaction, JanoEmbed(description=text, color=0xE74C3C if notes else 0x2ECC71),
-                                 delay=30 if notes else 10)
+            await _reply_temporarily(interaction, text, delay=30 if notes else 10)
             return
         view = _UpgradeView(self, interaction.user.id, release, main, dev)
         view.message = await interaction.followup.send(embed=_upgrade_embed(COMMANDS_VERSION, release, main, dev, notes),
@@ -1190,8 +1189,8 @@ class Jano(Plugin):
             return
         self._upgrading = True
 
-        async def say(text: str, view=None, color: int = 0x3498DB) -> None:
-            await interaction.edit_original_response(embed=JanoEmbed(description=text, color=color), view=view)
+        async def say(text: str, view=None) -> None:
+            await interaction.edit_original_response(content=text, embed=None, view=view)
         try:
             if release.get("data") is None:
                 await say("⏳ Downloading the release...")
@@ -1205,12 +1204,12 @@ class Jano(Plugin):
             script = files.get("migrate_config.py")
             note = await asyncio.to_thread(self._run_migration, script) if script else ""
         except UpgradeError as e:
-            await say(f"❌ Update stopped: {e}", color=0xE74C3C)
+            await say(f"❌ Update stopped: {e}")
             _spawn(_later(30, interaction.delete_original_response))
             return
         except Exception as e:
             self.log.error(f"Jano: update failed: {e}", exc_info=True)
-            await say(f"❌ Update failed, the previous version is still in place: {e}", color=0xE74C3C)
+            await say(f"❌ Update failed, the previous version is still in place: {e}")
             _spawn(_later(30, interaction.delete_original_response))
             return
         finally:
@@ -1222,7 +1221,7 @@ class Jano(Plugin):
         await say(f"✅ Updated to Ver. {release['text']} ({len(changed)} file(s) replaced; the old ones are kept in "
                   f"`plugins/jano/.backup`)." + (f" ⚠️ {note}." if note else "")
                   + "\nDo you want to restart DCSServerBot now so the update takes effect?",
-                  view=view, color=0xF39C12 if note else 0x2ECC71)
+                  view=view)
 
     # The notice that closes a restart: the new process finishes what the old one started.
 
@@ -1262,18 +1261,16 @@ class Jano(Plugin):
             expected = str(data["expected"])
             if expected == COMMANDS_VERSION:
                 text = f"✅ DCSServerBot has been updated successfully.\nJano Ver. {COMMANDS_VERSION} is now running."
-                color = 0x2ECC71
             else:
                 text = (f"⚠️ DCSServerBot restarted, but the update was not applied.\n"
                         f"Jano Ver. {COMMANDS_VERSION} is running (Ver. {expected} was expected).")
-                color = 0xE67E22
             hook = self._notice_webhook(data["app_id"], data["token"])
             last_error = None
             # The message the "Restart now" button sat on: "@original" for that button's token; its
             # numeric id as a second way if Discord refuses the first.
             for target in ("@original", int(data["message_id"])):
                 try:
-                    await hook.edit_message(target, embeds=[JanoEmbed(description=text, color=color)], view=None)
+                    await hook.edit_message(target, content=text, embeds=[], view=None)
                 except Exception as e:
                     last_error = e
                     continue
@@ -1356,6 +1353,11 @@ async def _delete_after(message: discord.Message, delay: int = 120):
 
 async def _followup_send(interaction: discord.Interaction, embed: discord.Embed, delay: int = 120):
     msg = await interaction.followup.send(embed=embed, ephemeral=True)
+    _spawn(_delete_after(msg, delay))
+
+async def _reply_temporarily(interaction: discord.Interaction, text: str, delay: int = 10) -> None:
+    """Private plain-text reply that removes itself after `delay` seconds."""
+    msg = await interaction.followup.send(text, ephemeral=True, wait=True)
     _spawn(_delete_after(msg, delay))
 
 _background_tasks: set = set()
@@ -1739,10 +1741,23 @@ class _AdminOnlyView(BotView):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return getattr(interaction.user, "id", None) == self.user_id
 
+    async def _say_and_clear(self, text: str, delay: int) -> None:
+        """Replace the message with plain text (no card, no buttons) and delete it after `delay` seconds."""
+        if not self.message:
+            return
+        try:
+            await self.message.edit(content=text, embeds=[], view=None)
+        except Exception:
+            return
+        _spawn(_delete_after(self.message, delay))
+
     async def _cancelled(self, interaction: discord.Interaction) -> None:
         self.stop()
-        await interaction.response.edit_message(embed=JanoEmbed(description="Update cancelled.", color=0x95A5A6), view=None)
+        await interaction.response.edit_message(content="Update cancelled.", embed=None, view=None)
         _spawn(_later(5, interaction.delete_original_response))
+
+    async def on_timeout(self) -> None:
+        await self._say_and_clear("Update offer expired.", 10)
 
 
 class _UpgradeView(_AdminOnlyView):
@@ -1804,16 +1819,14 @@ class _RestartView(_AdminOnlyView):
         super().__init__(plugin, user_id, timeout=600)
         self.text = text
 
-    def _later_embed(self) -> discord.Embed:
-        return JanoEmbed(description=f"✅ Ver. {self.text} is installed. It takes effect the next time DCSServerBot restarts.",
-                         color=0x2ECC71)
+    def _later_text(self) -> str:
+        return f"✅ Ver. {self.text} is installed. It takes effect the next time DCSServerBot restarts."
 
     @discord.ui.button(label="Restart now", style=discord.ButtonStyle.danger)
     async def restart_now(self, interaction: discord.Interaction, button):
         self.stop()
         await interaction.response.edit_message(
-            embed=JanoEmbed(description="🔄 Restarting DCSServerBot now... this message updates when it is back.",
-                            color=0xF1C40F), view=None)
+            content="🔄 Restarting DCSServerBot now... this message updates when it is back.", embed=None, view=None)
         self.plugin._save_restart_notice(interaction, self.text)
         await asyncio.sleep(1)
         await self.plugin.bot.node.restart()
@@ -1821,11 +1834,11 @@ class _RestartView(_AdminOnlyView):
     @discord.ui.button(label="Later", style=discord.ButtonStyle.secondary)
     async def later(self, interaction: discord.Interaction, button):
         self.stop()
-        await interaction.response.edit_message(embed=self._later_embed(), view=None)
+        await interaction.response.edit_message(content=self._later_text(), embed=None, view=None)
         _spawn(_later(30, interaction.delete_original_response))
 
     async def on_timeout(self) -> None:
-        await self._finish(self._later_embed(), delay=30)
+        await self._say_and_clear(self._later_text(), 30)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
