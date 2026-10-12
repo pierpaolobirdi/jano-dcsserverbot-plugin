@@ -41,7 +41,7 @@ _DEFAULT_TZ = "Europe/Madrid"
 
 # Internal version of this file only — updated manually in commands.py, independent of version.py.
 # install.cmd reads this line to show the installed/new version: keep the format COMMANDS_VERSION = "x.y.z"
-COMMANDS_VERSION = "5.0.11"
+COMMANDS_VERSION = "5.0.12"
 
 _MAX_INSTANCES = 4
 
@@ -1835,10 +1835,10 @@ class _RestartView(_AdminOnlyView):
     async def later(self, interaction: discord.Interaction, button):
         self.stop()
         await interaction.response.edit_message(content=self._later_text(), embed=None, view=None)
-        _spawn(_later(30, interaction.delete_original_response))
+        _spawn(_later(20, interaction.delete_original_response))
 
     async def on_timeout(self) -> None:
-        await self._say_and_clear(self._later_text(), 30)
+        await self._say_and_clear(self._later_text(), 20)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

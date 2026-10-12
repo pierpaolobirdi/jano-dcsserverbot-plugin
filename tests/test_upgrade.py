@@ -392,7 +392,7 @@ def test_restart_now_restarts_and_leaves_a_notice_later_does_not(tmp_path, monke
     p.restarts.clear()
     it = asyncio.run(go("Later"))
     assert p.restarts == [] and not (tmp_path / ".restart_notice.json").exists()
-    assert "takes effect the next time" in it.response.edits[0]["content"] and sleeps.later[-1] == 30
+    assert "takes effect the next time" in it.response.edits[0]["content"] and sleeps.later[-1] == 20
 
 
 def test_the_dev_button_shows_a_risk_warning_and_installs_only_after_accepting(tmp_path, monkeypatch, sleeps):
@@ -721,4 +721,4 @@ def test_expired_offers_and_questions_become_text_and_clean_up(tmp_path, monkeyp
         "Update offer expired.", "Update offer expired.",
         "✅ Ver. 9.9.9 is installed. It takes effect the next time DCSServerBot restarts."]
     assert all(m.edited[0]["embeds"] == [] and m.edited[0]["view"] is None for m in msgs)
-    assert sleeps.deleted == [10, 10, 30]
+    assert sleeps.deleted == [10, 10, 20]
