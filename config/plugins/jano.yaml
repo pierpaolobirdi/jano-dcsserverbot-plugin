@@ -16,6 +16,9 @@
 #               omit either to use the built-in default.
 #               Placeholders:  {name}  = instance name
 #                              {voice} = voice-channel mention (<#id>)
+#                              {schedule} = e.g. "Mon–Fri · 19:15 – 22:00 (Europe/Madrid)"
+#                              {days} / {opening} / {closing} = the parts of the schedule
+#               The default message already shows the event schedule.
 #
 # Example:
 # DEFAULT:

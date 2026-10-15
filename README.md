@@ -181,7 +181,7 @@ DEFAULT:
 |---|---|---|
 | `command_role_ids` | Roles allowed to use Jano commands on every instance (and the only ones allowed to use `/jano setup`) | `[]` (all users) |
 | `timezone` | IANA timezone name for schedule calculations | `Europe/Madrid` |
-| `open_message.title` | Title of the schedule-open announcement embed. `{name}` and `{voice}` are replaced at runtime. | Built-in English text |
+| `open_message.title` | Title of the schedule-open announcement embed. `{name}` and `{voice}` are replaced at runtime, and so are `{schedule}`, `{days}`, `{opening}` and `{closing}` (the instance's schedule; empty when it has none). | Built-in English text |
 | `open_message.body` | Body of the schedule-open announcement embed. Same placeholders available. | Built-in English text |
 
 Full list of timezone names: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
@@ -219,7 +219,7 @@ Run `/jano setup` and follow the wizard:
 4. **Schedule & Limit** — configure active days (0=Mon to 6=Sun), opening/closing times (HH:MM), and max manual duration
 5. **Review** — confirm and create the instance
 
-When an instance opens **on schedule**, Jano posts an announcement in the text channel (pinging the mention role, if any) and deletes it when the instance closes. Announcements are not posted for manual openings.
+When an instance opens **on schedule**, Jano posts an announcement in the text channel (pinging the mention role, if any), with the event schedule (days, hours and timezone) and deletes it when the instance closes. Announcements are not posted for manual openings.
 
 If you change the category of an existing instance, Jano removes its 🟢/🔴 markers from the name of the previous category. Permissions of the previous category are left untouched.
 

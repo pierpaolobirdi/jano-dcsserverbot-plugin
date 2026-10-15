@@ -49,7 +49,7 @@ _DEFAULT_TZ = "Europe/Madrid"
 # for those installations to be able to update straight to it. Nothing in the code uses it (a
 # test keeps it equal to PLUGIN_RELEASE). It can only go once no installation older than 5.1.1
 # is expected to use /jano upgrade.
-COMMANDS_VERSION = "5.1.2"
+COMMANDS_VERSION = "5.1.3"
 
 _MAX_INSTANCES = 4
 
@@ -755,18 +755,27 @@ class Jano(Plugin):
         Supported keys under open_message:
           title: "Custom title — {name}"
           body:  "Custom body — connect to {voice}"
-        {name} and {voice} are replaced with the instance name and the voice-channel mention.
+        {name} and {voice} are replaced with the instance name and the voice-channel mention; {schedule},
+        {days}, {opening} and {closing} with the instance's schedule (empty when it has none).
         """
         voice_id      = st.cfg.voice_channel_id
         voice_mention = f"<#{voice_id}>" if voice_id else "Voice Channel"
         tpl           = self._open_message_template
 
+        cfg      = st.cfg
+        days_txt = _days_label(cfg.active_days)
+        schedule = f"{days_txt} · {cfg.opening_time} – {cfg.closing_time} ({cfg.tz.key})" if days_txt else ""
+
         def fmt(text: str) -> str:
-            return text.replace("{name}", st.cfg.name).replace("{voice}", voice_mention)
+            return (text.replace("{name}", cfg.name).replace("{voice}", voice_mention)
+                        .replace("{schedule}", schedule).replace("{days}", days_txt)
+                        .replace("{opening}", cfg.opening_time if days_txt else "")
+                        .replace("{closing}", cfg.closing_time if days_txt else ""))
 
         body_default = (
             f"The **{st.cfg.name}** channels will remain open until the end of the event."
-            f"\n\nPlease connect to the channel:\n\n{voice_mention}\n\n"
+            + (f"\n\n🕒 **Event schedule:** {schedule}" if schedule else "")
+            + f"\n\nPlease connect to the channel:\n\n{voice_mention}\n\n"
             f"Before the start of **{st.cfg.name}**."
         )
         return JanoEmbed(
@@ -1298,6 +1307,21 @@ class Jano(Plugin):
 # ══════════════════════════════════════════════════════════════════════════════
 # SHARED UTILITIES
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _days_label(days) -> str:
+    """'Mon–Fri', 'Mon, Wed, Sat' or 'Mon–Wed, Sat' from day numbers (0 = Monday); '' when there are none."""
+    days = sorted({d for d in days or [] if d in _DAY_NAMES})
+    runs, start = [], None
+    for i, d in enumerate(days):
+        if start is None:
+            start = d
+        if i + 1 == len(days) or days[i + 1] != d + 1:
+            runs.append((start, d))
+            start = None
+    return ", ".join(_DAY_NAMES[a] if a == b else
+                     (f"{_DAY_NAMES[a]}, {_DAY_NAMES[b]}" if b == a + 1 else f"{_DAY_NAMES[a]}–{_DAY_NAMES[b]}")
+                     for a, b in runs)
+
 
 def _strip_status_icons(name: str) -> str:
     """Category name without the 🟢/🔴 markers Jano adds."""
