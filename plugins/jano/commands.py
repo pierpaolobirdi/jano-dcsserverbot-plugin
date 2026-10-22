@@ -49,7 +49,7 @@ _DEFAULT_TZ = "Europe/Madrid"
 # for those installations to be able to update straight to it. Nothing in the code uses it (a
 # test keeps it equal to PLUGIN_RELEASE). It can only go once no installation older than 5.1.1
 # is expected to use /jano upgrade.
-COMMANDS_VERSION = "5.1.4"
+COMMANDS_VERSION = "5.1.5"
 
 _MAX_INSTANCES = 4
 
@@ -354,7 +354,7 @@ class InstanceState:
                 st.manual_override = None
                 st.override_ts     = None
             else:
-                log.info(_jl(f"Manual mode restored ({'OPEN' if manual_override else 'CLOSED'})", cfg.name))
+                log.info(_jl(f"Manual mode restored ({'Open' if manual_override else 'Closed'})", cfg.name))
         else:
             st.manual_override = None
             st.override_ts     = None
@@ -710,7 +710,7 @@ class Jano(Plugin):
                     await st.save_state()
                 return
 
-            self.log.info(_jl(f"Applying ({source}) → {'OPEN' if is_open else 'CLOSED'}", st.cfg.name))
+            self.log.info(_jl(f"Applying ({source.capitalize()}) → {'Open' if is_open else 'Closed'}", st.cfg.name))
 
             for attempt in range(3):
                 try:

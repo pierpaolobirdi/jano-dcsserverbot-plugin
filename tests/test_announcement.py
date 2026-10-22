@@ -53,3 +53,11 @@ def test_every_log_call_uses_the_dcsserverbot_style():
     src = open(commands.__file__, encoding="utf-8").read()
     calls = re.findall(r"\blog\.(?:debug|info|warning|error|exception)\((?!_jl\()", src)
     assert calls == []
+
+
+def test_log_messages_have_no_all_capital_words():
+    import re
+    src = open(commands.__file__, encoding="utf-8").read()
+    for call in re.findall(r"_jl\((f?\"[^\n]*)", src):
+        literal = re.sub(r"\{[^{}]*\}", "", call)             # the expressions are code, not text
+        assert not re.search(r"\b[A-Z]{3,}\b", literal), call
