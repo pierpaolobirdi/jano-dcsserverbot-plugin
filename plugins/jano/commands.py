@@ -49,7 +49,7 @@ _DEFAULT_TZ = "Europe/Madrid"
 # for those installations to be able to update straight to it. Nothing in the code uses it (a
 # test keeps it equal to PLUGIN_RELEASE). It can only go once no installation older than 5.1.1
 # is expected to use /jano upgrade.
-COMMANDS_VERSION = "5.1.3"
+COMMANDS_VERSION = "5.1.4"
 
 _MAX_INSTANCES = 4
 
@@ -311,7 +311,7 @@ class InstanceState:
                         self.manual_hours_active,
                     ))
         except Exception as e:
-            log.error(f"[Jano/{cfg.name}] Error saving state: {e}")
+            log.error(_jl(f"Error saving state: {e}", cfg.name))
             raise
 
     @classmethod
@@ -336,7 +336,7 @@ class InstanceState:
         st.manual_hours_active = hours_active if hours_active is not None else cfg.max_manual_hours
         # max_hours_override / schedule_override are no longer used; warn if old data is being ignored.
         if state_row["max_hours_override"] is not None or state_row["schedule_override"]:
-            log.warning(f"[Jano/{cfg.name}] Ignoring obsolete max_hours_override / schedule_override stored in DB")
+            log.warning(_jl("Ignoring obsolete max_hours_override / schedule_override stored in DB", cfg.name))
 
         manual_override = state_row["manual_override"]
         override_ts     = state_row["override_ts"]
@@ -350,11 +350,11 @@ class InstanceState:
             st.override_ts     = ts
             st.manual_override = manual_override
             if st.manual_expired():
-                log.info(f"[Jano/{cfg.name}] ⏳ Manual mode expired offline → resetting")
+                log.info(_jl("Manual mode expired offline → resetting", cfg.name))
                 st.manual_override = None
                 st.override_ts     = None
             else:
-                log.info(f"[Jano/{cfg.name}] 🔄 Manual mode restored ({'OPEN' if manual_override else 'CLOSED'})")
+                log.info(_jl(f"Manual mode restored ({'OPEN' if manual_override else 'CLOSED'})", cfg.name))
         else:
             st.manual_override = None
             st.override_ts     = None
@@ -426,7 +426,7 @@ class Jano(Plugin):
 
     async def cog_load(self) -> None:
         await super().cog_load()
-        self.log.debug("  => Plugin loading...")
+        self.log.debug(_jl("Plugin loading..."))
         cfg = self.get_config() or {}
 
         # Timezone — stored on self, never on a module global
@@ -434,7 +434,7 @@ class Jano(Plugin):
         try:
             self.tz = ZoneInfo(tz_name)
         except Exception:
-            self.log.warning(f"Invalid timezone '{tz_name}', using default '{_DEFAULT_TZ}'")
+            self.log.warning(_jl(f"Invalid timezone '{tz_name}', using default '{_DEFAULT_TZ}'"))
             self.tz = ZoneInfo(_DEFAULT_TZ)
 
         # Open-channel announcement template (configurable in jano.yaml)
@@ -455,10 +455,10 @@ class Jano(Plugin):
         await super().on_ready()
         guild = self._get_guild()
         if not guild:
-            self.log.error("❌ Could not find guild. Plugin disabled.")
+            self.log.error(_jl("Could not find guild. Plugin disabled."))
             return
         self._server_id = guild.id
-        self.log.info(f"Connected to Guild: {guild.name}")
+        self.log.info(_jl(f"Connected to Guild: {guild.name}"))
         # Resolve role names/IDs from YAML now that the guild is available.
         self._resolve_yaml_roles(guild)
         await self._migrate_db()
@@ -467,7 +467,7 @@ class Jano(Plugin):
         await self._evaluate_all()
         if not self.scheduler.is_running():
             self.scheduler.start()
-        self.log.debug(f"Ready - {len(self.states)} instance(s) loaded.")
+        self.log.debug(_jl(f"Ready - {len(self.states)} instance(s) loaded."))
         await self._finish_restart_notice()
 
     def _resolve_yaml_roles(self, guild: discord.Guild):
@@ -485,9 +485,9 @@ class Jano(Plugin):
             role = discord.utils.get(guild.roles, name=str(val))
             if role:
                 resolved.append(role.id)
-                self.log.debug(f"Role '{val}' resolved → ID {role.id}")
+                self.log.debug(_jl(f"Role '{val}' resolved → ID {role.id}"))
             else:
-                self.log.warning(f"Role '{val}' not found in guild — skipping")
+                self.log.warning(_jl(f"Role '{val}' not found in guild — skipping"))
         self.command_role_ids_global = resolved
 
     # ── Helpers ────────────────────────────────────────────────────────────
@@ -526,7 +526,7 @@ class Jano(Plugin):
             async with self.apool.connection() as conn:
                 await conn.execute(schema)
         except Exception as e:
-            self.log.error(f"Error creating tables: {e}")
+            self.log.error(_jl(f"Error creating tables: {e}"))
 
     async def _migrate_db(self):
         """Apply any missing DB schema changes automatically on startup.
@@ -543,7 +543,7 @@ class Jano(Plugin):
                     await conn.execute(sql)
                 await self._migrate_legacy_columns(conn)
         except Exception as e:
-            self.log.error(f"Error applying DB migrations: {e}")
+            self.log.error(_jl(f"Error applying DB migrations: {e}"))
 
     # TODO (pending): remove _LEGACY_COLUMN_RENAMES and _migrate_legacy_columns() once every
     # installation has been migrated to the English column names (v1.2+). After that, nothing
@@ -581,7 +581,7 @@ class Jano(Plugin):
         for table, old, new in self._LEGACY_COLUMN_RENAMES:
             if (table, old) in existing and (table, new) not in existing:
                 await conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
-                self.log.info(f"DB migration: {table}.{old} → {new}")
+                self.log.info(_jl(f"DB migration: {table}.{old} → {new}"))
 
     # ── DB Load ────────────────────────────────────────────────────────────
 
@@ -623,20 +623,20 @@ class Jano(Plugin):
                 )
                 st                = InstanceState.restore(cfg, r, self)
                 self.states[name] = st
-                self.log.debug(f"Instance '{name}' restored from DB")
+                self.log.debug(_jl("Restored from DB", name))
 
             if not self.states:
-                self.log.debug("No instances configured. Use /jano setup to create one.")
+                self.log.debug(_jl("No instances configured. Use /jano setup to create one."))
 
         except Exception as e:
-            self.log.error(f"Error loading state from DB: {e}")
+            self.log.error(_jl(f"Error loading state from DB: {e}"))
 
     async def _create_instance(self, cfg: InstanceConfig) -> InstanceState:
         """Add a new instance to memory and persist config to DB."""
         st                    = InstanceState(cfg, self)
         self.states[cfg.name] = st
         await st.save()
-        self.log.info(f"Instance '{cfg.name}' created.")
+        self.log.info(_jl("Instance created.", cfg.name))
         return st
 
     async def _delete_instance(self, name: str):
@@ -651,7 +651,7 @@ class Jano(Plugin):
             guild = self._get_guild()
             txt = _channel(guild, st.cfg.text_channel_id) if guild else None
             if txt and await _delete_message(txt, st.last_message_id):
-                self.log.info(f"[{name}] 🧹 Embed deleted on instance removal")
+                self.log.info(_jl("Embed deleted on instance removal", name))
         if name in self.states:
             del self.states[name]
         try:
@@ -659,7 +659,7 @@ class Jano(Plugin):
                 # jano_state cascades on delete from jano_instances
                 await conn.execute("DELETE FROM jano_instances WHERE name = %s", (name,))
         except Exception as e:
-            self.log.error(f"Error deleting instance '{name}': {e}")
+            self.log.error(_jl(f"Error deleting instance: {e}", name))
 
     # ── Core scheduling logic ──────────────────────────────────────────────
 
@@ -673,7 +673,7 @@ class Jano(Plugin):
                 await self._evaluate_instance(st)
             except Exception:
                 # One failing instance must not stop the scheduler loop (tasks.loop dies on exceptions).
-                self.log.exception(f"[{st.cfg.name}] Error while evaluating instance")
+                self.log.exception(_jl("Error while evaluating instance", st.cfg.name))
 
     async def _evaluate_instance(self, st: InstanceState):
         if st._evaluating:
@@ -682,7 +682,7 @@ class Jano(Plugin):
         try:
             is_open, source = st.compute_desired_state()
             if source == "EXPIRED":
-                self.log.info(f"[{st.cfg.name}] ⏳ Manual mode expired → returning to schedule")
+                self.log.info(_jl("Manual mode expired → returning to schedule", st.cfg.name))
                 st.deactivate_manual()
                 await st.save_state()
                 is_open, source = st.compute_desired_state()
@@ -696,7 +696,7 @@ class Jano(Plugin):
             text_ch  = _channel(guild, st.cfg.text_channel_id)
 
             if not role or not category:
-                self.log.warning(f"[{st.cfg.name}] Role or category not found, skipping.")
+                self.log.warning(_jl("Role or category not found, skipping.", st.cfg.name))
                 return
 
             await _update_category_name(category, is_open, st)
@@ -710,7 +710,7 @@ class Jano(Plugin):
                     await st.save_state()
                 return
 
-            self.log.info(f"[{st.cfg.name}] 🔄 Applying ({source}) → {'OPEN' if is_open else 'CLOSED'}")
+            self.log.info(_jl(f"Applying ({source}) → {'OPEN' if is_open else 'CLOSED'}", st.cfg.name))
 
             for attempt in range(3):
                 try:
@@ -721,14 +721,14 @@ class Jano(Plugin):
                 except discord.HTTPException as e:
                     if e.status == 429:
                         # Do not mark the state as applied — the next scheduler tick retries.
-                        self.log.warning(f"[{st.cfg.name}] Rate limit on permissions, will retry next cycle")
+                        self.log.warning(_jl("Rate limit on permissions, will retry next cycle", st.cfg.name))
                         return
                     else:
-                        self.log.warning(f"[{st.cfg.name}] Permission error (attempt {attempt+1}/3): {e}")
+                        self.log.warning(_jl(f"Permission error (attempt {attempt+1}/3): {e}", st.cfg.name))
                         if attempt < 2:
                             await asyncio.sleep(3)
                         else:
-                            self.log.error(f"[{st.cfg.name}] ❌ Definitive failure: {e}")
+                            self.log.error(_jl(f"Definitive failure: {e}", st.cfg.name))
                             return
 
             if text_ch:
@@ -800,9 +800,9 @@ class Jano(Plugin):
             clean_name = _strip_status_icons(category.name)
             if clean_name != category.name:
                 await category.edit(name=clean_name)
-            self.log.info(f"[{instance_name}] 🧹 Previous category '{clean_name}' released")
+            self.log.info(_jl(f"Previous category '{clean_name}' released", instance_name))
         except discord.HTTPException as e:
-            self.log.warning(f"[{instance_name}] Could not clean previous category: {e}")
+            self.log.warning(_jl(f"Could not clean previous category: {e}", instance_name))
 
     async def _clean_orphan_embeds(self):
         guild = self._get_guild()
@@ -815,7 +815,7 @@ class Jano(Plugin):
                     txt = _channel(guild, st.cfg.text_channel_id)
                     if txt:
                         if await _delete_message(txt, st.last_message_id):
-                            self.log.info(f"[{st.cfg.name}] 🧹 Orphan embed removed")
+                            self.log.info(_jl("Orphan embed removed", st.cfg.name))
                         st.last_message_id = None
                         await st.save_state()
 
@@ -1123,7 +1123,7 @@ class Jano(Plugin):
         notes, offers = [], []
         for (label, _), result in zip(sources, results):
             if isinstance(result, Exception):
-                self.log.error(f"Jano: {label} check failed: {result}", exc_info=not isinstance(result, UpgradeError))
+                self.log.error(_jl(f"{label} check failed: {result}"), exc_info=not isinstance(result, UpgradeError))
                 notes.append(f"Could not check the {label}: {result}")
             offers.append(None if isinstance(result, Exception) else result)
         release, main, dev = _pick_offers(*offers)
@@ -1194,7 +1194,7 @@ class Jano(Plugin):
             except Exception as e:
                 return f"configuration migration could not run ({e})"
         if res.returncode != 0:
-            self.log.warning(f"Jano: configuration migration failed: {res.stdout.strip()} {res.stderr.strip()}")
+            self.log.warning(_jl(f"Configuration migration failed: {res.stdout.strip()} {res.stderr.strip()}"))
             return "configuration migration reported an error (your file is unchanged)"
         return ""
 
@@ -1225,14 +1225,14 @@ class Jano(Plugin):
             _spawn(_later(30, interaction.delete_original_response))
             return
         except Exception as e:
-            self.log.error(f"Jano: update failed: {e}", exc_info=True)
+            self.log.error(_jl(f"Update failed: {e}"), exc_info=True)
             await say(f"❌ Update failed, the previous version is still in place: {e}")
             _spawn(_later(30, interaction.delete_original_response))
             return
         finally:
             self._upgrading = False
-        self.log.info(f"Jano: updated {PLUGIN_RELEASE} -> {release['text']} "
-                      f"({len(changed)} file(s) replaced, restart pending).")
+        self.log.info(_jl(f"Updated {PLUGIN_RELEASE} -> {release['text']} "
+                          f"({len(changed)} file(s) replaced, restart pending)."))
         view = _RestartView(self, interaction.user.id, release["text"])
         view.message = await interaction.original_response()
         await say(f"✅ Updated to Ver. {release['text']} ({len(changed)} file(s) replaced; the old ones are kept in "
@@ -1250,9 +1250,9 @@ class Jano(Plugin):
             with open(self._restart_notice_file(), "w", encoding="utf-8") as f:
                 json.dump({"app_id": interaction.application_id, "token": interaction.token,
                            "message_id": interaction.message.id, "expected": expected, "created": time.time()}, f)
-            self.log.info("Jano: restart notice saved for the next start.")
+            self.log.info(_jl("Restart notice saved for the next start."))
         except Exception as e:
-            self.log.warning(f"Jano: could not save the restart notice: {e!r}")
+            self.log.warning(_jl(f"Could not save the restart notice: {e!r}"))
 
     def _notice_webhook(self, app_id, token):
         return discord.Webhook.partial(app_id, token, client=self.bot)
@@ -1291,12 +1291,12 @@ class Jano(Plugin):
                 except Exception as e:
                     last_error = e
                     continue
-                self.log.info(f"Jano: restart notice delivered ({text[:2]}).")
+                self.log.info(_jl(f"Restart notice delivered ({text[:2]})."))
                 _spawn(_later(20, lambda target=target: hook.delete_message(target)))
                 return
-            self.log.warning(f"Jano: could not update the restart message: {last_error!r}")
+            self.log.warning(_jl(f"Could not update the restart message: {last_error!r}"))
         except Exception as e:
-            self.log.warning(f"Jano: could not finish the restart notice: {e!r}")
+            self.log.warning(_jl(f"Could not finish the restart notice: {e!r}"))
 
     # One shared autocomplete for the "instance" argument of every command.
     jano_status.autocomplete("instance")(_autocomplete_instance)
@@ -1376,6 +1376,11 @@ async def _delete_message(channel, message_id: int) -> bool:
 def _no_permission(msg: str = "❌ You do not have permission to use this command.") -> discord.Embed:
     return JanoEmbed(description=msg, color=0xE67E22)
 
+def _jl(text: str, instance: str | None = None) -> str:
+    """A log line in DCSServerBot's style: '  => Jano: text', or '  => Jano [instance]: text'."""
+    return f"  => Jano{f' [{instance}]' if instance else ''}: {text}"
+
+
 async def _delete_after(message: discord.Message, delay: int = 120):
     await asyncio.sleep(delay)
     try:
@@ -1449,10 +1454,10 @@ async def _update_category_name(category, is_open: bool, st: InstanceState):
     try:
         await category.edit(name=target_name)
         if not st.cfg.status_icon:
-            log.info(f"[Jano/{st.cfg.name}] 🧹 Emojis removed from category name")
+            log.info(_jl("Emojis removed from category name", st.cfg.name))
     except discord.HTTPException as e:
         if e.status != 429:
-            log.error(f"[Jano/{st.cfg.name}] Error renaming category: {e}")
+            log.error(_jl(f"Error renaming category: {e}", st.cfg.name))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1561,7 +1566,7 @@ async def _later(delay: float, action) -> None:
     try:
         await action()
     except Exception as e:
-        log.debug(f"Jano: clean-up of a message failed: {e!r}")
+        log.debug(_jl(f"Clean-up of a message failed: {e!r}"))
 
 
 def _release_version(text) -> tuple[int, int, int] | None:
@@ -1996,7 +2001,7 @@ class ModalConfirmDelete(discord.ui.Modal, title="⚠️ Confirm deletion"):
             await _error(interaction, f"❌ Instance '{name}' no longer exists.")
             return
         await self.plugin._delete_instance(name)
-        log.info(f"[Jano] 🗑️ Instance '{name}' deleted by {interaction.user}")
+        log.info(_jl(f"Instance deleted by {interaction.user}", name))
         if self.is_last:
             embed = JanoEmbed(
                 title=f"🗑️ Instance '{name}' deleted",
@@ -2540,7 +2545,7 @@ class WizardStep5Summary(BotView):
             await interaction.response.send_message(embed=JanoEmbed(
                 title=f"✅ Changes saved — {d.name}", description="All changes applied immediately.", color=0x2ECC71
             ), ephemeral=True, delete_after=120)
-            log.info(f"[Jano] Instance '{d.name}' edited by {interaction.user}")
+            log.info(_jl(f"Instance edited by {interaction.user}", d.name))
         else:
             if len(self.plugin.states) >= _MAX_INSTANCES or d.name in self.plugin.states:
                 await _error(interaction, f"❌ Cannot create '{d.name}': the instance limit ({_MAX_INSTANCES}) was reached or the name is already taken.")
@@ -2565,7 +2570,7 @@ class WizardStep5Summary(BotView):
                 title=f"✅ Instance created — {d.name}",
                 description=f"The instance **{d.name}** is ready.\n\nUse `/jano setup` to modify its configuration.", color=0x2ECC71
             ), ephemeral=True, delete_after=120)
-            log.info(f"[Jano] Instance '{d.name}' created by {interaction.user}")
+            log.info(_jl(f"Instance created by {interaction.user}", d.name))
 
     async def _rename_in_db(self, old: str, new: str) -> bool:
         try:
@@ -2573,7 +2578,7 @@ class WizardStep5Summary(BotView):
                 await conn.execute("UPDATE jano_instances SET name = %s WHERE name = %s", (new, old))
             return True
         except Exception as e:
-            log.error(f"[Jano] Error renaming instance in DB: {e}")
+            log.error(_jl(f"Error renaming instance in DB: {e}"))
             return False
 
     async def _cancel(self, interaction: discord.Interaction):

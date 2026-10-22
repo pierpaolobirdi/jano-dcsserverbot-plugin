@@ -1,4 +1,4 @@
-"""The announcement posted when an instance opens on schedule."""
+"""The announcement posted when an instance opens on schedule, and the style of the log lines."""
 import types
 from zoneinfo import ZoneInfo
 
@@ -41,3 +41,15 @@ def test_custom_templates_can_use_the_schedule_placeholders():
     assert embed.description == "Mon, Tue 19:15-22:00 | Mon, Tue · 19:15 – 22:00 (Europe/Madrid) | <#123>"
     p._open_message_template = {"body": "[{schedule}][{opening}]"}
     assert p._announcement_embed(_st([])).description == "[][]"
+
+
+def test_log_lines_follow_dcsserverbots_style():
+    assert commands._jl("Plugin loading...") == "  => Jano: Plugin loading..."
+    assert commands._jl("Applying (SCHEDULE) → OPEN", "Misiones") == "  => Jano [Misiones]: Applying (SCHEDULE) → OPEN"
+
+
+def test_every_log_call_uses_the_dcsserverbot_style():
+    import re
+    src = open(commands.__file__, encoding="utf-8").read()
+    calls = re.findall(r"\blog\.(?:debug|info|warning|error|exception)\((?!_jl\()", src)
+    assert calls == []

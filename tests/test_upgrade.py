@@ -516,7 +516,7 @@ def test_if_both_ways_fail_it_is_logged_as_a_warning(tmp_path, sleeps, caplog):
     _notice(tmp_path)
     with caplog.at_level("WARNING"):
         asyncio.run(p._finish_restart_notice())
-    assert "could not update the restart message" in caplog.text
+    assert "Could not update the restart message" in caplog.text
 
 
 def test_the_upgrade_command_is_registered_in_the_jano_group():
